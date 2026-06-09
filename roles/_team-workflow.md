@@ -252,9 +252,9 @@ cat report.md | team-send 제임스
 
 `team-send` 헬퍼는 bracketed paste 후 자동 Enter 송신하지만, 다음 경우 미발동 발생:
 
-- 메시지 크기 3KB+ (bracketed paste 영역 race condition)
-- 수신자 페인 idle 직후 paste 영역 timing 영역
-- 본인 (CTO) 페인 영역 사용자 직접 입력 잔존 영역 paste 충돌
+- 메시지 크기 3KB+ (bracketed paste 처리 중 race condition)
+- 수신자 페인 idle 직후 paste 시점 timing
+- 본인 (CTO) 페인에서 사용자 직접 입력 잔존 + paste 충돌
 
 → 본 §8.2.1 4단계 검증 의무로 사고 회복 표준화. 사고 발견 시 즉시 `tmux send-keys Enter` 보강.
 
