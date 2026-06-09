@@ -286,17 +286,17 @@ echo -e "\n${YELLOW}[3/4] Claude 실행 중... (파인당 최대 1분)${NC}"
 # MEMBER_NAMES/MODELS 순서는 PANE_IDS 와 동일한 row-major 시각 인덱스를 따른다.
 #   0=제임스 / 1=네이선 / 2=수진 / 3=마크 / 4=정민 / 5=수영 / 6=카맥
 # 모델 배정 원칙 (사용 패턴 측정 기반, 2026-05-20 갱신):
-#   - Opus 4.7: 의사결정·아키텍처·구현 품질·머지 게이트 (영향 大)
+#   - Opus 4.8: 의사결정·아키텍처·구현 품질·머지 게이트 (영향 大)
 #   - Sonnet 4.6 (1M): 고빈도 반복 작업 + 큰 컨텍스트 필요 (예: 측정·프로파일링)
 #   - Haiku 4.5: 단순 조회·비교·저활동 멤버 (Sonnet 의 90% 성능, 약 1/3 비용)
 MEMBER_NAMES=("제임스" "네이선" "수진" "마크저커버그" "정민" "수영" "카맥")
 MEMBER_MODELS=(
-    "claude-opus-4-7"        # 제임스 CTO — 전략 결정·릴리스 사인오프·모니터링
-    "claude-opus-4-7"        # 네이선 Architect — 아키텍처 결정·ADR
-    "claude-haiku-4-5"       # 수진 Researcher — 저활동 (PR 0건). 단순 문서 조회·비교에 충분
-    "claude-opus-4-7"        # 마크 Developer — 구현 품질 머지 게이트의 입구. 고빈도 코드 작성
-    "claude-opus-4-7"        # 정민 QA·Reviewer — 머지 게이트 (CRITICAL 누락 비용 ↑)
-    "claude-haiku-4-5"       # 수영 UI/UX — 현 백엔드 프로젝트 한정 (UI 작업 최소). 프런트 프로젝트면 Sonnet 으로 복귀
+    "claude-opus-4-8"        # 제임스 CTO — 전략 결정·릴리스 사인오프·모니터링
+    "claude-opus-4-8"        # 네이선 Architect — 아키텍처 결정·ADR
+    "claude-sonnet-4-6[1m]"  # 수진 Researcher — 저활동 (PR 0건). 단순 문서 조회·비교에 충분
+    "claude-opus-4-8"        # 마크 Developer — 구현 품질 머지 게이트의 입구. 고빈도 코드 작성
+    "claude-opus-4-8"        # 정민 QA·Reviewer — 머지 게이트 (CRITICAL 누락 비용 ↑)
+    "claude-sonnet-4-6[1m]"  # 수영 UI/UX — 현 백엔드 프로젝트 한정 (UI 작업 최소). 프런트 프로젝트면 Sonnet 으로 복귀
     "claude-sonnet-4-6[1m]"  # 카맥 Performance — 측정 146회 (최다). 1M 컨텍스트로 auto-compact 완화
 )
 
