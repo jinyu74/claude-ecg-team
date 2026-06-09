@@ -5,7 +5,7 @@
 #   1. stdin 으로 PostToolUse JSON 페이로드 수신 (Claude Code hook 규약)
 #   2. tool_name == "Bash" 이고 command 가 team-send 호출인 경우만 진입
 #   3. team-send stdout 의 `pane N` 파싱 → 수신자 페인 식별
-#   4. sleep 2 후 capture-pane → AND 매칭 (PATTERN_TOKENS + PATTERN_VERBS)
+#   4. sleep 2.5 후 capture-pane → 단일 패턴 매칭 (PATTERN_ACTIVE)
 #   5. 미활성 → tmux send-keys Enter 보강 → 1초 후 재확인
 #   6. 여전히 미활성 → stderr 안내 + exit 2 (Esc 자동 발사 금지 — S6 β)
 #
@@ -68,12 +68,19 @@ TARGET="${SESSION}:0.${TARGET_PANE}"
 
 TS=$(date +'%Y-%m-%d %H:%M:%S')
 
-# ── 7. 활성 판정 함수 — AND 매칭 (CTO 결정 2026-06-09 §14.2) ──────────────
-#     PATTERN_TOKENS: 처리 중 토큰 카운터 footer  예: `(15s · ↑ 234 tokens · esc to interrupt)`
-#     PATTERN_VERBS:  현재 활성 동사 (Crunched 는 완료 메시지 — 제외)
-#     **AND 매칭** 두 조건 모두 충족 시만 active.
-PATTERN_TOKENS='\([0-9]+s · [↑↓]'
-PATTERN_VERBS='(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)'
+# ── 7. 활성 판정 함수 — 단일 패턴 (CTO §14.2 정정 2026-06-09 15:34) ────────
+#     PATTERN_ACTIVE: 처리 중 토큰 카운터 footer 의 괄호 + 시간 + 화살표 부분
+#       예: `(15s · ↑ 234 tokens)` / `(1m 6s · ↓ 3.4k tokens)`
+#     의도: active 신호 (괄호로 묶인 카운터) 매칭 + Crunched 같은 완료 메시지는
+#       `Crunched for Ns · ↑ tokens` (괄호 부재) 라서 자동 차단.
+#     본 단일 패턴 채택 사유 (카맥 Phase 2 발견 2026-06-09 15:32):
+#       - PATTERN_VERBS 열거 방식: 실 운영 누락 (Combobulating / Transfiguring /
+#         Composing) — UI 가 동사를 지속 추가 → 구조적 회귀 위험
+#       - PATTERN_TOKENS 단독: 분 포맷 (1m Ns) 미지원 BUG
+#       → 단일 패턴 + 분 포맷 지원으로 두 버그 동시 해소.
+#     `(...)` 는 ERE 단순 그룹 (캡처 결과 미사용, 카맥 원본 `(?:...)` PCRE 비포착
+#       그룹 → grep -E ERE 호환 형식으로 마크 보강).
+PATTERN_ACTIVE='\(([0-9]+m )?[0-9]+s · [↑↓]'
 
 verify_active() {
     local capture
@@ -83,8 +90,7 @@ verify_active() {
         return 2  # capture 실패 — caller 가 별도 처리 (S9)
     fi
     capture=$(printf '%s' "$capture" | tail -10)
-    if grep -qE "$PATTERN_TOKENS" <<<"$capture" \
-        && grep -qE "$PATTERN_VERBS" <<<"$capture"; then
+    if grep -qE "$PATTERN_ACTIVE" <<<"$capture"; then
         return 0
     fi
     return 1

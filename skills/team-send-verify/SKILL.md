@@ -24,19 +24,28 @@ PostToolUse hook (matcher: `Bash`). 다음 모두 충족 시 본격 진입:
 
 위 외 호출 (다른 Bash 명령, team-send 실패) 은 즉시 exit 0 으로 skip.
 
-## 3. 활성 판정 패턴 (AND 매칭)
+## 3. 활성 판정 패턴 (단일 패턴 — 카맥 Phase 2 정정)
 
-CTO 결정 (2026-06-09 §14.2). 두 조건 모두 충족 시만 active:
+CTO 결정 (2026-06-09 §14.2 정정 15:34 — 카맥 발견 반영). 괄호로 묶인 토큰 카운터 단일 매칭:
 
 ```bash
-PATTERN_TOKENS='\([0-9]+s · [↑↓]'
-PATTERN_VERBS='(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)'
+PATTERN_ACTIVE='\(([0-9]+m )?[0-9]+s · [↑↓]'
 ```
 
-- `PATTERN_TOKENS` — 처리 중 토큰 카운터 footer `(Ns · ↑/↓ N tokens · esc to interrupt)`
-- `PATTERN_VERBS` — 현재 활성 동사 (Claude Code UI 의 진행 중 표시)
+- 매칭 대상: `(15s · ↑ 234 tokens)`, `(1m 6s · ↓ 3.4k tokens)` 같은 처리 중 footer 의 괄호 묶음
+- 분 포맷 (`Nm Ns`) 자동 지원
+- **Crunched 같은 완료 메시지는 `Crunched for Ns · ↑ tokens` (괄호 부재) 라서 자동 차단**
 
-**Crunched 는 의도적으로 제외**. `Crunched for Ns` 는 완료 후 메시지 — false positive 위험.
+### 본 단일 패턴 채택 사유 (구 AND 매칭 폐기)
+
+| 항목 | 구 AND 매칭 (PATTERN_TOKENS + PATTERN_VERBS) | 단일 PATTERN_ACTIVE |
+|---|---|---|
+| 새 동사 (Combobulating / Transfiguring / Composing 등) 추가 | ❌ 수동 갱신 필요 — 100% false negative 위험 | ✅ 자동 처리 |
+| 분 포맷 (`(1m 6s · ↓`) 매칭 | ❌ BUG — false negative | ✅ 내장 |
+| Crunched 완료 메시지 차단 | ✅ | ✅ (괄호 부재 → 자동 차단) |
+| 유지보수 | 지속 취약 (UI 변경 시) | 안정 |
+
+본 변경은 카맥 Phase 2 측정 (2026-06-09 15:32) 결과 100% false negative 근본 원인 진단 + CTO §14.2 결정 정정 (15:34) 채택. 상세: `docs/performance/profile/team-send-verify-2026-06-09.md` §10.
 
 ## 4. 동작 흐름
 
@@ -51,7 +60,7 @@ tool_name / command / stdout 분기 → 비대상이면 exit 0
    ↓
 stdout 의 `pane N` 파싱 → SESSION:0.N 타깃 결정
    ↓
-sleep 2.5초 (카맥 Phase 2 측정 — 1M ctx TTFT p95 ≈ 2.5s 커버) → capture-pane → AND 매칭
+sleep 2.5초 (카맥 Phase 2 측정 — 1M ctx TTFT p95 ≈ 2.5s 커버) → capture-pane → PATTERN_ACTIVE 매칭
    ↓
    ├── 매칭 성공: exit 0 (정상)
    ├── capture 실패: stderr + exit 2 (페인 사라짐 가능)
@@ -115,10 +124,10 @@ bash /Users/vuno/Project/claude/setup-team.sh --hook-only
 ### 8.1 정상 발송인데 exit 2 가 자주 발생
 
 - 원인 후보:
-  1. Claude Code UI spinner 패턴 변경 (PATTERN_VERBS 미매칭)
+  1. Claude Code UI footer 포맷 변경 (PATTERN_ACTIVE 미매칭 — 예: 괄호 형식 변경, 화살표 unicode 변경)
   2. sleep 2.5 가 짧음 (수신자 페인이 느리게 응답)
 - 진단: `tail /tmp/team-send-verify.log` 에서 `WARN ... no active` 빈도 확인
-- 대응: `bin/team-send-verify.sh` 의 PATTERN_VERBS 보강 또는 SLEEP_INITIAL 증가 (3.5초)
+- 대응: `bin/team-send-verify.sh` 의 PATTERN_ACTIVE 보강 또는 SLEEP_INITIAL 증가 (3.5초)
 
 ### 8.2 jq 미설치 안내가 매 호출 표시
 

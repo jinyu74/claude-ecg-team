@@ -86,7 +86,7 @@ bin/team-status --tail 2
 
 `team-send` 호출 직후 자동 발동:
 
-1. 수신자 페인을 capture 해 활성 상태 확인 (AND 매칭 — 토큰 카운터 `(Ns · ↑/↓` + 활성 동사 `Thinking/Envisioning/Crystallizing/...`)
+1. 수신자 페인을 capture 해 활성 상태 확인 (단일 패턴 `\(([0-9]+m )?[0-9]+s · [↑↓]` — 처리 중 토큰 카운터 footer 괄호 매칭. 분 포맷 자동 지원. Crunched 같은 완료 메시지는 괄호 부재 → 자동 차단)
 2. 미활성 시 자동으로 Enter 보강 송신
 3. 여전히 미활성이면 stderr 진단 가이드 + exit 2 (사용자에게 안내)
 

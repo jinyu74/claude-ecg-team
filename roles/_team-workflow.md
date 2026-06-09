@@ -241,7 +241,7 @@ cat report.md | team-send 제임스
 
 **자동화 보완 — `team-send-verify` PostToolUse Hook (2026-06-09 도입)**:
 
-- 본 repo `bin/team-send-verify.sh` 가 매 `team-send` 호출 직후 위 3·4 단계를 자동 수행 (capture-pane + AND 매칭 활성 판정 + Enter 보강).
+- 본 repo `bin/team-send-verify.sh` 가 매 `team-send` 호출 직후 위 3·4 단계를 자동 수행 (capture-pane + 단일 패턴 활성 판정 + Enter 보강).
 - Hook 가 spinner 미확인 시 자동 Enter 보강 → 재확인 → 그래도 미활성이면 stderr 진단 가이드 + exit 2.
 - **Esc 자동 발사 등 destructive 동작은 절대 수행 안 함** — 페인의 사용자 작업 보호 (정민 권장 S6 β + CTO §14.5).
 - 발동 로그: `/tmp/team-send-verify.log` (tail -20 로 최근 이력 확인).
