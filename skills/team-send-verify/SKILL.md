@@ -51,7 +51,7 @@ tool_name / command / stdout 분기 → 비대상이면 exit 0
    ↓
 stdout 의 `pane N` 파싱 → SESSION:0.N 타깃 결정
    ↓
-sleep 2초 (카맥 임계 정합) → capture-pane → AND 매칭
+sleep 2.5초 (카맥 Phase 2 측정 — 1M ctx TTFT p95 ≈ 2.5s 커버) → capture-pane → AND 매칭
    ↓
    ├── 매칭 성공: exit 0 (정상)
    ├── capture 실패: stderr + exit 2 (페인 사라짐 가능)
@@ -116,9 +116,9 @@ bash /Users/vuno/Project/claude/setup-team.sh --hook-only
 
 - 원인 후보:
   1. Claude Code UI spinner 패턴 변경 (PATTERN_VERBS 미매칭)
-  2. sleep 2 가 짧음 (수신자 페인이 느리게 응답)
+  2. sleep 2.5 가 짧음 (수신자 페인이 느리게 응답)
 - 진단: `tail /tmp/team-send-verify.log` 에서 `WARN ... no active` 빈도 확인
-- 대응: `bin/team-send-verify.sh` 의 PATTERN_VERBS 보강 또는 SLEEP_INITIAL 증가 (3초)
+- 대응: `bin/team-send-verify.sh` 의 PATTERN_VERBS 보강 또는 SLEEP_INITIAL 증가 (3.5초)
 
 ### 8.2 jq 미설치 안내가 매 호출 표시
 

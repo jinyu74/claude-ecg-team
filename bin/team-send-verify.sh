@@ -20,7 +20,7 @@
 set -uo pipefail
 
 LOG=/tmp/team-send-verify.log
-SLEEP_INITIAL=2          # ADR §14.3 — 카맥 임계 정합
+SLEEP_INITIAL=2.5        # 카맥 Phase 2 측정 (1M ctx TTFT p95 ≈ 2.5s) — 회귀 빈도 < 5% 충족
 SLEEP_RECHECK=1          # Enter 보강 후 재확인 대기
 
 # ── 1. jq 가용성 — 미설치 시 graceful degradation (S8) ────────────────────
