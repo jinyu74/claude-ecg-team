@@ -1,11 +1,19 @@
 # ADR: team-send 검증 자동화 — PostToolUse Hook + 보조 스킬 패키지
 
-- 상태: Proposed
+- 상태: **Accepted** (CTO 검수 통과 2026-06-09 15:02)
 - 일자: 2026-06-09
 - 의사결정자: 제임스 (CTO), 네이선 (Architect)
 - 작성: 네이선 (위임자 제임스 2026-06-09 14:51)
 - 우선순위: UNIV v1.0.0.0 과 병렬 즉시 진입 (CEO 결재 2026-06-09)
 - Jira: 없음 (본 인프라 repo PR/commit 으로만 진행 — CEO 결재)
+
+## 갱신 이력
+
+| 일자·시각 | 갱신자 | 내용 |
+|---|---|---|
+| 2026-06-09 14:51~15:00 | 네이선 | 초안 작성 (commit `ad82d63`) |
+| 2026-06-09 15:02 | CTO 검수 통과 | §14 4종 결정 답변 수신 |
+| 2026-06-09 15:05 | 네이선 | §5 의사 코드 AND 매칭 패턴 반영 + §5.1 정규식 근거 재작성 (Crunched 제외 + `esc to interrupt` 제외) |
 
 ---
 
@@ -251,29 +259,40 @@ TARGET_PANE=$(printf '%s' "$STDOUT" | grep -oE 'pane [0-9]+' | head -1 | awk '{p
 SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo team)
 TARGET="${SESSION}:0.${TARGET_PANE}"
 
-# ── 5. 2 초 sleep 후 수신자 페인 footer 점검 ───────────────────────────────
-sleep 2
-CAPTURE=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
+# ── 5. AND 매칭 활성 판정 함수 — false positive 방지 (CTO 결정 2026-06-09) ─
+#     PATTERN_TOKENS: 처리 중 토큰 카운터 (`(Ns · ↑/↓ N tokens`)
+#     PATTERN_VERBS:  현재 활성 동사 (Crunched 제외 — 완료 메시지 패턴)
+#     **AND 매칭**: 두 정규식 모두 충족 시만 active. 단일 조건은 false positive.
+PATTERN_TOKENS='\([0-9]+s · [↑↓]'
+PATTERN_VERBS='(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)'
 
-# ── 6. spinner 정규식 매칭 — Thinking/Envisioning/Crystallizing/Crunched 등 ─
-SPINNER_REGEX='✻|✢|✳|✺|Thinking…|Envisioning…|Crystallizing…|Crunched|esc to interrupt'
-if grep -qE "$SPINNER_REGEX" <<<"$CAPTURE"; then
-    echo "[verify] OK pane=${TARGET_PANE} spinner active" >>"$LOG"
+verify_active() {
+    local capture
+    capture=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
+    grep -qE "$PATTERN_TOKENS" <<<"$capture" && \
+    grep -qE "$PATTERN_VERBS" <<<"$capture"
+}
+
+# ── 6. 2 초 sleep 후 수신자 페인 활성 점검 ─────────────────────────────────
+#     2초 = 카맥 임계 1M context TTFT p95 (2.5s) 의 안전 마진 내. recall 우선.
+sleep 2
+if verify_active; then
+    echo "[verify] OK pane=${TARGET_PANE} active" >>"$LOG"
     exit 0
 fi
 
 # ── 7. 미발동 — 보강 Enter 송신 ───────────────────────────────────────────
-echo "[verify] WARN pane=${TARGET_PANE} no spinner — sending Enter" >>"$LOG"
+echo "[verify] WARN pane=${TARGET_PANE} no active — sending Enter" >>"$LOG"
 tmux send-keys -t "$TARGET" Enter
 sleep 1
-CAPTURE2=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
-if grep -qE "$SPINNER_REGEX" <<<"$CAPTURE2"; then
+if verify_active; then
     echo "[verify] RECOVERED pane=${TARGET_PANE}" >>"$LOG"
     exit 0
 fi
+CAPTURE2=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
 
 # ── 8. 복구 실패 — exit 2 로 본인 Claude 에 stderr 전달 ───────────────────
-echo "[verify] FAIL pane=${TARGET_PANE} Enter 보강 후에도 spinner 없음" >>"$LOG"
+echo "[verify] FAIL pane=${TARGET_PANE} Enter 보강 후에도 active 아님" >>"$LOG"
 cat >&2 <<EOF
 [team-send-verify] 수신자 pane=${TARGET_PANE} 에 메시지 잔존 가능.
 capture-pane 결과:
@@ -293,15 +312,47 @@ exit 2
 | 2 | 보강 실패 — stderr 전달 | 본인 Claude 에 stderr 노출, 응답에서 진단 진입 |
 | 그 외 | 비예상 오류 | warning 표시 (응답 차단 안 함) |
 
-### 5.1 정규식 근거
+### 5.1 정규식 근거 — AND 매칭 채택 (CTO 결정 2026-06-09 15:02)
 
-`feedback_team_send_spinner_verify.md` 학습 기록 + 본 검토 시 실측 Claude Code UI:
+본인 (CTO) SSOT memory + 마크 사전 조사 §5 + 정민 카탈로그 S10 future-proof 권장 종합 결론.
 
-- `✻` `✢` `✳` `✺` — Unicode 별 모양 spinner (회전 프레임)
-- `Thinking…` `Envisioning…` `Crystallizing…` `Crunched for Ns` — 한국어판/영어판 spinner 라벨
-- `esc to interrupt` — 처리 중일 때 footer 영역에 항상 표시
+#### PATTERN_TOKENS — 활성 토큰 카운터
 
-**주의**: `esc to interrupt` 단독으로 active 판정 시 false positive 가능 — `feedback_team_send_spinner_verify.md` 학습 교훈. 본 정규식은 spinner 기호 + 라벨 + `esc to interrupt` **OR** 매칭이지만, 향후 false positive 발견 시 spinner 기호·라벨로 좁힐 것 (현재는 recall 우선).
+```
+\([0-9]+s · [↑↓]
+```
+
+처리 중인 동안 footer 영역에 표시되는 elapsed time + token counter 패턴 (예: `(12s · ↑ 1.4k tokens`). 활성 처리만 본 패턴을 표시 — 완료·idle 상태에서는 사라짐.
+
+#### PATTERN_VERBS — 활성 동사 (Crunched 제외)
+
+```
+(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)
+```
+
+Claude Code UI 의 활성 처리 동사 8 종. **`Crunched` 의도적 제외** — `Crunched for Ns · ↑ N tokens` 는 **완료** 메시지로 `PATTERN_TOKENS` 에 매칭되므로, `PATTERN_VERBS` 가 단독으로 차단해야 active false positive 방지.
+
+#### AND 매칭의 정당성
+
+| 시나리오 | TOKENS | VERBS | AND 판정 |
+|---|---|---|---|
+| 활성 처리 중 (`Thinking… (12s · ↑ 1.4k tokens`) | ✓ | ✓ | **active** ✓ |
+| 완료 직후 (`Crunched for 9s · ↑ 1.4k tokens`) | ✓ | ✗ | **inactive** ✓ |
+| idle prompt (footer 없음) | ✗ | ✗ | **inactive** ✓ |
+| `esc to interrupt` 단독 (이전 출력 잔존) | ✗ | ✗ | **inactive** ✓ (false positive 차단) |
+
+**`esc to interrupt` 제외 사유**: footer 영역에 잔존하는 경우 false positive 위험 — `feedback_team_send_spinner_verify.md` 학습 교훈 (2026-06-09 CEO 직접 발동 사고).
+
+#### sleep 2 의 정당성
+
+- 카맥 임계: 1M context TTFT p95 = 2.5s.
+- 2초 sleep 후 capture 시 활성 패턴 미표시면 Enter 미발동 확정 (마진 0.5s 내).
+- recall 우선 — false negative (active 인데 inactive 판정) 줄이는 방향.
+
+#### 향후 future-proof
+
+- Claude Code 가 새 동사 추가 시 `PATTERN_VERBS` 갱신 — 정민 카탈로그 S10 권장.
+- `PATTERN_TOKENS` 는 footer 영역 UI 변경 영향. 변경 감지 시 본 ADR 후속 ADR 로 갱신.
 
 ---
 
@@ -554,13 +605,17 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 
 ---
 
-## 14. 의사결정 요청
+## 14. 의사결정 결과 (CTO 답변 2026-06-09 15:02)
 
-CTO (제임스) 검토 사항:
+| # | 항목 | 결과 |
+|---|---|---|
+| 1 | §4.2 Hook 등록 위치 (b) 사용자 전역 | **동의** |
+| 2 | §5 sleep 2 + spinner 정규식 | **AND 매칭 채택** — `PATTERN_TOKENS` + `PATTERN_VERBS` (Crunched 제외) 반영 완료 (§5.1) |
+| 3 | §9 `_team-workflow.md` hybrid 정책 | **동의** — Hook 도입 후에도 매뉴얼 4단계 유지 |
+| 4 | §10 후속 흐름 | **동의** — 마크 본격 구현 즉시 진입, Step 0 (stdin 스키마) 생략 (마크 사전 조사 §2.1 완료) |
 
-1. **§4.2 Hook 등록 위치 (b) 채택** 동의 여부 — `~/.claude/settings.json` 사용자 전역. (대안: 본 repo 로컬 `.claude/settings.json` 격리)
-2. **§5 의사 코드의 sleep 2 + spinner 정규식** 동의 여부 — recall 우선 vs precision 우선.
-3. **§9 `_team-workflow.md` 갱신 초안** 동의 여부 — Hook 도입 후에도 매뉴얼 4단계 유지하는 hybrid 정책.
-4. **§10 후속 흐름** 동의 — 마크 → 정민 + 카맥 동시 진입 순서.
+### 후속 검증 (마크 PR open 단계)
 
-승인 시 마크 위임 진행. 수정 요청 시 본 ADR §5/§7/§9 부분 재작성.
+- §3 실험은 본인 (네이선) 환경 진행 — 마크·정민·카맥 페인에서 동일 동작 검증 필요. 정민 회귀 단계에 흡수.
+- §9 Hook exit 2 사용자 alert 실측 — 마크 PR open 직후 정민 회귀 S4 시나리오에 흡수.
+- 마크 PR open 시 본인 (네이선) 이 ADR 정합성 재점검만 진입.

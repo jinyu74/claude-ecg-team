@@ -98,6 +98,16 @@ echo -e "${YELLOW}[0/4] 사전 요구사항 확인...${NC}"
 MISSING=()
 command -v tmux   &>/dev/null || MISSING+=("tmux (sudo apt install -y tmux)")
 command -v claude &>/dev/null || MISSING+=("claude (npm install -g @anthropic-ai/claude-code)")
+# jq — team-send-verify hook 가 stdin JSON 파싱에 사용. 미설치 시 hook 가 graceful skip 하지만 검증 자동화가 동작 안 함.
+JQ_OK=1
+if ! command -v jq &>/dev/null; then
+    JQ_OK=0
+    echo -e "${YELLOW}  ⚠️  jq 미설치 — team-send-verify hook 가 graceful skip 됩니다.${NC}"
+    echo -e "${YELLOW}     설치 권장: brew install jq (macOS) / apt install -y jq (Ubuntu)${NC}"
+fi
+# rsync — 스킬 디렉토리 idempotent 배포에 사용. 미설치 시 cp -R fallback.
+RSYNC_OK=1
+command -v rsync &>/dev/null || RSYNC_OK=0
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo -e "${RED}❌ 누락된 의존성:${NC}"
@@ -107,8 +117,80 @@ fi
 
 echo "  ✅ tmux $(tmux -V | awk '{print $2}')"
 echo "  ✅ claude $(claude --version 2>/dev/null | head -1)"
+[ "$JQ_OK" -eq 1 ] && echo "  ✅ jq $(jq --version 2>/dev/null)"
 echo "  📂 작업 디렉터리: $WORKDIR"
 echo "  🏷️  세션 이름: $SESSION"
+
+# ── [0.5/4] team-send-verify hook + 스킬 배포 (사용자 전역) ─────────────
+# 본 단계는 jq 가 있을 때만 hook 등록 진행. 스킬은 jq 없이도 배포.
+echo -e "\n${YELLOW}[0.5/4] team-send-verify hook + 스킬 배포...${NC}"
+
+HOOK_CMD="$SCRIPT_DIR/bin/team-send-verify.sh"
+SETTINGS_FILE="$HOME/.claude/settings.json"
+SKILL_SRC="$SCRIPT_DIR/skills/team-send-verify"
+SKILL_DST="$HOME/.claude/skills/team-send-verify"
+
+if [ ! -x "$HOOK_CMD" ]; then
+    chmod +x "$HOOK_CMD" 2>/dev/null || true
+fi
+
+if [ "$JQ_OK" -eq 1 ] && [ -x "$HOOK_CMD" ]; then
+    mkdir -p "$(dirname "$SETTINGS_FILE")"
+    if [ ! -f "$SETTINGS_FILE" ]; then
+        echo '{}' > "$SETTINGS_FILE"
+    fi
+    # 백업 (timestamp suffix). 누적되지만 사용자가 정리 가능.
+    cp "$SETTINGS_FILE" "$SETTINGS_FILE.bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+
+    # smart merge — 동일 (matcher, command) 중복 추가 방지, 다른 hook 보존.
+    # ADR §3.4 검증 패턴.
+    PATCH_JSON=$(jq -n --arg cmd "$HOOK_CMD" '{
+        hooks: {
+            PostToolUse: [
+                {
+                    matcher: "Bash",
+                    hooks: [{type: "command", command: $cmd}]
+                }
+            ]
+        }
+    }')
+
+    MERGED=$(jq -s --argjson patch "$PATCH_JSON" '
+        .[0] as $base |
+        $base
+        | .hooks //= {}
+        | .hooks.PostToolUse =
+            ([($base.hooks.PostToolUse // [])[], ($patch.hooks.PostToolUse // [])[]]
+              | group_by(.matcher)
+              | map({
+                  matcher: .[0].matcher,
+                  hooks: ([.[].hooks[]] | unique_by(.command))
+              })
+            )
+    ' "$SETTINGS_FILE" 2>/dev/null)
+
+    if [ -n "$MERGED" ]; then
+        TMP_SETTINGS=$(mktemp)
+        printf '%s\n' "$MERGED" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+        echo -e "  ${GREEN}✅${NC} ~/.claude/settings.json — team-send-verify hook 등록"
+    else
+        echo -e "  ${RED}❌${NC} jq smart merge 실패 — settings.json 백업 보존, hook 미등록"
+    fi
+else
+    [ "$JQ_OK" -eq 0 ] && echo -e "  ${YELLOW}⏭️${NC} jq 미설치 — hook 등록 skip"
+    [ ! -x "$HOOK_CMD" ] && echo -e "  ${YELLOW}⏭️${NC} $HOOK_CMD 실행 권한 없음 — hook 등록 skip"
+fi
+
+# 스킬 배포 — idempotent
+if [ -d "$SKILL_SRC" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    if [ "$RSYNC_OK" -eq 1 ]; then
+        rsync -a --delete "$SKILL_SRC/" "$SKILL_DST/"
+    else
+        rm -rf "$SKILL_DST" && mkdir -p "$SKILL_DST" && cp -R "$SKILL_SRC/." "$SKILL_DST/"
+    fi
+    echo -e "  ${GREEN}✅${NC} ~/.claude/skills/team-send-verify/ 배포"
+fi
 
 # ── [1/4] 기존 세션 정리 ────────────────────────────────────
 echo -e "\n${YELLOW}[1/4] 기존 세션 확인...${NC}"
