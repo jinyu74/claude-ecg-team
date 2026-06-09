@@ -239,6 +239,15 @@ cat report.md | team-send 제임스
 
 검증 없이 "전달 완료" 응답 금지 — LLM 환각으로 거짓 보고가 발생함. **모든 메시지 크기 공통** (이전 3KB+ 한정 표준 → 전체 적용 강화, CEO 결정 2026-06-08).
 
+**자동화 보완 — `team-send-verify` PostToolUse Hook (2026-06-09 도입)**:
+
+- 본 repo `bin/team-send-verify.sh` 가 매 `team-send` 호출 직후 위 3·4 단계를 자동 수행 (capture-pane + AND 매칭 활성 판정 + Enter 보강).
+- Hook 가 spinner 미확인 시 자동 Enter 보강 → 재확인 → 그래도 미활성이면 stderr 진단 가이드 + exit 2.
+- **Esc 자동 발사 등 destructive 동작은 절대 수행 안 함** — 페인의 사용자 작업 보호 (정민 권장 S6 β + CTO §14.5).
+- 발동 로그: `/tmp/team-send-verify.log` (tail -20 로 최근 이력 확인).
+- **Hook 도입 후에도 본 §8.2.1 4단계 의무는 유효** — Hook 는 보완책이지 면제책 아님. Hook 실패 (jq 미설치 / tmux 비가용 / 스크립트 손상) 시 매뉴얼 검증 fallback.
+- 가이드: `~/.claude/skills/team-send-verify/SKILL.md` (자동 배포) — 디버그·비활성화 절차 포함.
+
 ### 8.2.2 Enter 미발동 사고 패턴 (학습 기록)
 
 `team-send` 헬퍼는 bracketed paste 후 자동 Enter 송신하지만, 다음 경우 미발동 발생:
