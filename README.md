@@ -8,6 +8,7 @@ tmux + Claude Code 로 다중 페르소나(역할별 페인)를 자동 구성하
 
 - `tmux`
 - `claude` CLI (`@anthropic-ai/claude-code`)
+- `jq` (선택 — team-send-verify Hook 동작에 필요. 미설치 시 Hook 만 graceful skip)
 
 ## 사용법
 
@@ -73,3 +74,49 @@ bin/team-status --tail 2
 `roles/.merged/` 는 `setup-team.sh` 가 공통 워크플로와 역할 파일을 합쳐서 만드는
 런타임 합성 결과물입니다. 매 실행마다 새로 생성되므로 절대 커밋하지 않습니다
 (`.gitignore` 처리됨).
+
+## team-send-verify Hook (자동 배포)
+
+`setup-team.sh` 실행 시 다음 두 가지가 사용자 전역 (`~/.claude/`) 으로 자동 배포됩니다.
+
+- `bin/team-send-verify.sh` 를 가리키는 **PostToolUse Hook** — `~/.claude/settings.json` 에 jq smart merge 로 등록
+- `skills/team-send-verify/SKILL.md` → `~/.claude/skills/team-send-verify/` 로 rsync
+
+### 동작
+
+`team-send` 호출 직후 자동 발동:
+
+1. 수신자 페인을 capture 해 활성 상태 확인 (AND 매칭 — 토큰 카운터 `(Ns · ↑/↓` + 활성 동사 `Thinking/Envisioning/Crystallizing/...`)
+2. 미활성 시 자동으로 Enter 보강 송신
+3. 여전히 미활성이면 stderr 진단 가이드 + exit 2 (사용자에게 안내)
+
+**Esc 자동 발사 등 destructive 동작은 절대 수행 안 함** — 페인 사용자 작업 보호.
+
+상세 가이드: `skills/team-send-verify/SKILL.md` (배포 후 `~/.claude/skills/team-send-verify/SKILL.md`).
+
+### 해제 방법
+
+본 Hook 비활성화가 필요한 경우 (fork 사용자 / 다른 PostToolUse Hook 와 충돌 / 디버그):
+
+```bash
+# 1. 임시 비활성화 — file watcher 가 즉시 픽업
+jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-verify.sh")))' \
+    ~/.claude/settings.json > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
+
+# 2. 영구 비활성화 — ~/.claude/settings.json 직접 편집해서 PostToolUse 배열에서 entry 제거
+$EDITOR ~/.claude/settings.json
+
+# 3. 재활성화 — setup-team.sh 재실행 (idempotent jq merge 로 안전)
+bash setup-team.sh
+```
+
+### 의존성
+
+- `jq` — 미설치 시 setup-team.sh 가 warning 만 표시하고 Hook 등록은 skip. Hook 자체는 graceful exit (warning + skip). 다른 단계는 정상 진행.
+- 로그: `/tmp/team-send-verify.log` (tail -20 으로 최근 이력 확인)
+
+### 근거 문서
+
+- ADR: `docs/decisions/2026-06-09-team-send-verify-hook.md`
+- 회귀 시나리오: `docs/qa/reviews/team-send-verify-test-scenarios-2026-06-09.md`
+- 공통 워크플로: `roles/_team-workflow.md` §8.2.1 / §8.2.2 / §8.4.x
