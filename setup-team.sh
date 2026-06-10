@@ -280,6 +280,27 @@ tmux set-option -p -t "$P_RIGHTCOL_BOT" @role "카맥 Performance Engineer"
 
 echo "  ✅ 레이아웃 구성 완료 (7 panes, 1:3:3)"
 
+# ── 페인 매핑 자가 검증 ────────────────────────────────────
+# team-send 의 이름→인덱스 매핑은 row-major 시각 인덱스 가정에 의존.
+# tmux 동작 차이·레이아웃 변경으로 어긋나면 메시지가 다른 멤버에게 오배달되므로
+# Claude 기동 전에 인덱스↔역할 일치를 검증한다.
+EXPECTED_ROLES=("제임스 CTO" "네이선 Architect" "수진 Researcher" "마크저커버그 Developer" "정민 QA·Reviewer" "수영 UI/UX Designer" "카맥 Performance Engineer")
+MAPPING_OK=1
+for i in 0 1 2 3 4 5 6; do
+    actual="$(tmux display-message -p -t "$SESSION:0.$i" '#{@role}' 2>/dev/null)"
+    if [ "$actual" != "${EXPECTED_ROLES[$i]}" ]; then
+        echo -e "  ${RED}❌ pane $i: 기대 '${EXPECTED_ROLES[$i]}' ≠ 실제 '$actual'${NC}"
+        MAPPING_OK=0
+    fi
+done
+if [ "$MAPPING_OK" -eq 1 ]; then
+    echo -e "  ${GREEN}✅ 페인 인덱스 ↔ 역할 매핑 일치 (team-send 기준)${NC}"
+else
+    echo -e "  ${RED}⚠️  매핑 불일치 — team-send 가 잘못된 페인으로 송신됩니다. 세션을 종료하고 레이아웃을 수정하세요.${NC}"
+    tmux kill-session -t "$SESSION"
+    exit 1
+fi
+
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
 echo -e "\n${YELLOW}[3/4] Claude 실행 중... (파인당 최대 1분)${NC}"
 
