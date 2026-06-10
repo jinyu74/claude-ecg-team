@@ -204,11 +204,13 @@ dev 브랜치 (모든 Sub-task 완료) → 제임스 (릴리스 사인오프) �
 |---|---|---|---|
 | 0 | CTO | 제임스 | james, cto |
 | 1 | Architect | 네이선 | nathan, architect |
-| 2 | Developer | 마크 | mark, developer, zuck |
-| 3 | UI/UX | 수영 | design, designer |
-| 4 | Researcher | 수진 | sujin, researcher |
-| 5 | QA·Reviewer | 정민 | qa, reviewer |
-| 6 | Performance | 카맥 | perf, performance, carmack |
+| 2 | Researcher | 수진 | sujin, researcher |
+| 3 | Developer | 마크 | mark, 마크저커버그, zuck, dev, developer |
+| 4 | QA·Reviewer | 정민 | jungmin, qa, reviewer |
+| 5 | UI/UX | 수영 | suyoung, design, designer |
+| 6 | Performance | 카맥 | carmack, perf, performance |
+
+> 위 인덱스는 `setup-team.sh` 의 1:3:3 레이아웃(row-major)과 `bin/team-send` 의 매핑이 기준이다. 페인 번호를 직접 쓰지 말고 가급적 **이름으로** `team-send` 를 호출한다.
 
 ### 8.2 송신 (team-send 헬퍼)
 
