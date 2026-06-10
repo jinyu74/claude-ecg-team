@@ -39,7 +39,8 @@ fi
 # ── 3. team-send 명령이 아니면 즉시 exit 0 (S2) ──────────────────────────
 COMMAND=$(jq -r '.tool_input.command // ""' <<<"$PAYLOAD" 2>/dev/null)
 case "$COMMAND" in
-    team-send\ *|*/team-send\ *|*\;\ team-send\ *|*\&\&\ team-send\ *) ;;
+    # stdin 파이프 (`cat x | team-send`) 는 §8.2 공식 사용법 — 패턴 누락 시 검증이 조용히 skip 됨.
+    team-send\ *|*/team-send\ *|*\;\ team-send\ *|*\&\&\ team-send\ *|*\|\ team-send\ *) ;;
     *) exit 0 ;;
 esac
 
