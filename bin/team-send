@@ -166,7 +166,8 @@ tmux paste-buffer -b "$BUFFER" -t "$TARGET" -p
 tmux delete-buffer -b "$BUFFER"
 
 # paste 안정화 대기: 메시지 길이에 비례. 최소 0.5s, 최대 2s.
-PAYLOAD_BYTES="${#PAYLOAD}"
+# ${#PAYLOAD} 는 문자 수라 UTF-8 한국어에서 ~3배 과소 (Enter 미발동 요인) → wc -c 로 바이트 수 계산.
+PAYLOAD_BYTES="$(printf '%s' "$PAYLOAD" | wc -c | tr -d ' ')"
 if [ "$PAYLOAD_BYTES" -lt 500 ]; then
     SLEEP_SEC="0.5"
 elif [ "$PAYLOAD_BYTES" -lt 2000 ]; then
