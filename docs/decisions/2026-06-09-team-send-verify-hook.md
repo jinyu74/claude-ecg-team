@@ -13,7 +13,11 @@
 |---|---|---|
 | 2026-06-09 14:51~15:00 | 네이선 | 초안 작성 (commit `ad82d63`) |
 | 2026-06-09 15:02 | CTO 검수 통과 | §14 4종 결정 답변 수신 |
-| 2026-06-09 15:05 | 네이선 | §5 의사 코드 AND 매칭 패턴 반영 + §5.1 정규식 근거 재작성 (Crunched 제외 + `esc to interrupt` 제외) |
+| 2026-06-09 15:05 | 네이선 | §5 AND 매칭 패턴 반영 + §5.1 정규식 근거 재작성 (마크 PR `5752947` 에 흡수) |
+| 2026-06-09 15:32 | 카맥 Phase 2 측정 | AND 매칭 두 BUG 식별 — VERBS 열거 누락 + TOKENS 분 포맷 미지원 |
+| 2026-06-09 15:34 | CTO 정정 | 단일 PATTERN_ACTIVE 채택 결정 — Hook 본체 즉시 반영 (마크 PR `5752947`) |
+| 2026-06-09 16:00+ | 네이선 | ADR §5/§5.1 단일 패턴으로 사후 정합 — Hook 본체와 일치시킴 |
+| 2026-07-09 | 카맥·네이선·정민 | **설계 전환**: verify.sh 로그 전용 강등 + team-send 에 positive delivery 루프 이관 (commit `b3b5873`) |
 
 ---
 
@@ -64,14 +68,14 @@
 | 항목 | 목표 |
 |---|---|
 | 1. spinner 미확인 누락 차단 | 99%+ (검증 자동화 보완) |
-| 2. 응답 지연 추가 | < 2초 (sleep 2 재확인 + 보강 Enter) |
+| 2. 응답 지연 추가 | ~~< 2초 (sleep 2 재확인 + 보강 Enter)~~ — 2026-07-09 §5.2 positive delivery 전환으로 blocking 제거. 지연 없음. |
 | 3. 새 팀 셋업 자동 배포 | `setup-team.sh` 1회 실행으로 Hook + 스킬 동시 활성 |
 | 4. 기존 사용자 설정 보호 | 다른 Hook 와 공존 (jq smart merge — §4-2-c) |
 | 5. 실패 시 안전성 | Hook 실패가 본 Bash 실행 자체를 차단하지 않음 (warning only) |
 | 6. 디버그 가능성 | 발동 로그 (`/tmp/team-send-verify.log`) 추적 가능 |
 
 비목표:
-- team-send 자체의 race condition 해소 (paste-buffer race) — 별도 sprint
+- ~~team-send 자체의 race condition 해소 (paste-buffer race) — 별도 sprint~~ → **2026-07-09 달성**: team-send 내 positive delivery 루프로 해소 (§5.2)
 - 수신자 측 Hook (현 범위는 발신자 측 PostToolUse 만)
 
 ---
@@ -219,140 +223,117 @@ claude-code-guide 권장 구조를 본 repo 컨벤션에 맞춰 확정·수정.
 
 ---
 
-## 5. 검증 스크립트 의사 코드
+## 5. 검증 스크립트 — 현행 동작 (2026-07-09 설계 전환)
 
-`/Users/vuno/Project/claude/bin/team-send-verify.sh` (PostToolUse Bash hook 본체):
+### 5.1 verify.sh — 로그 전용 (blocking 제거)
+
+**배경**: 구 PATTERN_ACTIVE blocking 방식은 1M context reasoning 중 footer 카운터가 미표시되어 오경보 43.5% 발생(2026-07-09 카맥 진단). 근본 원인은 "detector 신호"(footer 카운터)가 아닌 "transport"(paste + Enter) 레이어의 문제. detector 를 강화하는 대신 transport 자체에 delivery 확인을 내장하는 방향으로 전환(네이선 Q3 방향, 정민 6케이스 실측 통과).
+
+`/Users/vuno/Project/claude/bin/team-send-verify.sh` (현행, line 72-77):
 
 ```bash
-#!/usr/bin/env bash
-# PostToolUse Bash hook — team-send 호출 후 수신자 페인 spinner 검증 + Enter 보강
-# 본 hook 은 stdin 으로 PostToolUse JSON 페이로드를 수신 (§3.1 스키마 확정).
-
-set -uo pipefail
-LOG=/tmp/team-send-verify.log
-
-# ── 1. stdin JSON 파싱 — Bash 도구가 아니면 즉시 exit 0 ────────────────────
-PAYLOAD=$(cat)
-TOOL_NAME=$(jq -r '.tool_name // ""' <<<"$PAYLOAD")
-[ "$TOOL_NAME" = "Bash" ] || exit 0
-
-# ── 2. team-send 명령이 아니면 즉시 exit 0 ────────────────────────────────
-COMMAND=$(jq -r '.tool_input.command // ""' <<<"$PAYLOAD")
-case "$COMMAND" in
-    *team-send*) ;;
-    *) exit 0 ;;
-esac
-
-# ── 3. team-send 자체가 실패했으면 검증 skip — 본인 응답에서 진단 진입 ─────
-EXIT_CODE=$(jq -r '.tool_response.isError // false' <<<"$PAYLOAD")
-STDOUT=$(jq -r '.tool_response.stdout // .tool_output.output // ""' <<<"$PAYLOAD")
-case "$STDOUT" in
-    *"✅"*"→"*"(pane"*) ;;  # 성공 출력 패턴 — 계속 진행
-    *) exit 0 ;;            # 성공 패턴 없으면 fail 상태 — 본인 응답에서 진단
-esac
-
-# ── 4. 발신자·수신자·pane 인덱스 파싱 ─────────────────────────────────────
-#     출력 예: "✅ 네이선 → 제임스 (pane 0, 5249B)"
-TARGET_PANE=$(printf '%s' "$STDOUT" | grep -oE 'pane [0-9]+' | head -1 | awk '{print $2}')
-[ -n "$TARGET_PANE" ] || exit 0
-
-SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo team)
-TARGET="${SESSION}:0.${TARGET_PANE}"
-
-# ── 5. AND 매칭 활성 판정 함수 — false positive 방지 (CTO 결정 2026-06-09) ─
-#     PATTERN_TOKENS: 처리 중 토큰 카운터 (`(Ns · ↑/↓ N tokens`)
-#     PATTERN_VERBS:  현재 활성 동사 (Crunched 제외 — 완료 메시지 패턴)
-#     **AND 매칭**: 두 정규식 모두 충족 시만 active. 단일 조건은 false positive.
-PATTERN_TOKENS='\([0-9]+s · [↑↓]'
-PATTERN_VERBS='(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)'
-
-verify_active() {
-    local capture
-    capture=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
-    grep -qE "$PATTERN_TOKENS" <<<"$capture" && \
-    grep -qE "$PATTERN_VERBS" <<<"$capture"
-}
-
-# ── 6. 2 초 sleep 후 수신자 페인 활성 점검 ─────────────────────────────────
-#     2초 = 카맥 임계 1M context TTFT p95 (2.5s) 의 안전 마진 내. recall 우선.
-sleep 2
-if verify_active; then
-    echo "[verify] OK pane=${TARGET_PANE} active" >>"$LOG"
-    exit 0
-fi
-
-# ── 7. 미발동 — 보강 Enter 송신 ───────────────────────────────────────────
-echo "[verify] WARN pane=${TARGET_PANE} no active — sending Enter" >>"$LOG"
-tmux send-keys -t "$TARGET" Enter
-sleep 1
-if verify_active; then
-    echo "[verify] RECOVERED pane=${TARGET_PANE}" >>"$LOG"
-    exit 0
-fi
-CAPTURE2=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -5)
-
-# ── 8. 복구 실패 — exit 2 로 본인 Claude 에 stderr 전달 ───────────────────
-echo "[verify] FAIL pane=${TARGET_PANE} Enter 보강 후에도 active 아님" >>"$LOG"
-cat >&2 <<EOF
-[team-send-verify] 수신자 pane=${TARGET_PANE} 에 메시지 잔존 가능.
-capture-pane 결과:
-${CAPTURE2}
-
-수동 진단: tmux capture-pane -t ${TARGET} -p | tail -10
-수동 보강: tmux send-keys -t ${TARGET} Enter
-EOF
-exit 2
+# ── 7. non-blocking 로그 전용 ─────────────────────────────────────────────
+# delivery 확인은 team-send 내 positive delivery 루프로 이관 (2026-07-09).
+# 구 PATTERN_ACTIVE blocking 검증·Enter 보강·exit 2 차단 제거.
+# 본 hook 는 전송 이력 로깅만 수행하고 exit 0 으로 종료한다.
+echo "[$TS] LOG pane=${TARGET_PANE} team-send 완료" >>"$LOG" 2>/dev/null || true
+exit 0
 ```
 
-**Exit code 의미**:
+**Exit code**:
 
-| Code | 의미 | 본인 Claude 영향 |
+| Code | 의미 |
+|---|---|
+| 0 | 항상 (로그 기록 후 종료 — blocking 없음) |
+
+### 5.2 team-send — positive delivery 루프 (신규, 2026-07-09)
+
+`/Users/vuno/Project/claude/bin/team-send` (line 181-209):
+
+```bash
+# ── positive delivery 확인 (Enter 발동 후 입력창 잔존 체크) ─────────
+# 판정 신호 (❯ 이후 입력창 구간만 검사 — transcript 에코 제외):
+#   (1) "Press up to edit queued" — 큐잉 성공 → OK
+#   (2) "Pasted text"             — collapse placeholder 잔존(긴 메시지) → 미제출
+#   (3) MSG_PROBE                 — 짧은 메시지 비-collapse 잔존 안전망
+MSG_PROBE="$(printf '%s' "$PAYLOAD" | head -1 | cut -c1-25)"
+_DELIVERED=1
+for _i in 1 2 3; do
+    sleep 0.7
+    _CAP="$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -20)"
+    # 큐잉 성공 신호 → 즉시 OK
+    printf '%s' "$_CAP" | grep -qF "Press up to edit queued" && { _DELIVERED=1; break; }
+    # ❯ 이후 구간(입력창)만 추출 — transcript 에코 방지 (마지막 ❯ 기준)
+    _INPUT_AREA="$(printf '%s' "$_CAP" | awk '/❯/{buf=""; found=1} found{buf=buf$0 ORS} END{printf "%s", buf}')"
+    # 잔존 검사 먼저 — 입력창에 잔존 있으면 확정 미제출 → 재발사
+    if printf '%s' "$_INPUT_AREA" | grep -qF "Pasted text" || \
+       { [ -n "$MSG_PROBE" ] && printf '%s' "$_INPUT_AREA" | grep -qF "$MSG_PROBE"; }; then
+        tmux send-keys -t "$TARGET" Enter 2>/dev/null
+        _DELIVERED=0
+    else
+        _DELIVERED=1; break  # 입력창 비어있음 = 제출 성공 (esc든 idle이든 무관)
+    fi
+done
+# 3회 소진 후 잔존 신호 잔류 시 경고
+[ "$_DELIVERED" -eq 0 ] && echo "⚠️ ${SENDER} → ${RECIPIENT_NAME} delivery 미확인 — 수동 확인 권장" >&2
+```
+
+**판정 근거**: 제출 성공이면 paste 가 transcript 로 이동해 입력창에서 사라짐 → 입력창 잔존 = 미제출 확정. 비어있으면 제출 성공 (reasoning 중이든 idle 이든 무관). 단, 실제 소실(턴 경계 레이스 1/1680)은 입력창이 비어있으므로 허용.
+
+**오경보 측정**: 구 PATTERN_ACTIVE 방식 43.5% FAIL → 신 방식 0%(LOG 전용, 2026-07-09 실측).
+
+### 5.3 구 §5.1 정규식 근거 — Deprecated (2026-07-09)
+
+PATTERN_ACTIVE(`\(([0-9]+m )?[0-9]+s · [↑↓]`)는 verify.sh 에서 제거됨. 판정 책임이 team-send 의 입력창 잔존 grep 으로 이관됐으므로 본 패턴은 더 이상 운영되지 않는다. 이력 보존 목적으로 §5.1 원문은 git history 참조.
+
+### 5.1 정규식 근거 — 단일 PATTERN_ACTIVE 채택 (CTO §14.2 정정 2026-06-09 15:34)
+
+#### 결정 경로
+
+| 일시 | 단계 | 결정 |
 |---|---|---|
-| 0 | 정상 (spinner 확인 또는 본 hook 비대상) | 응답 정상 진행 |
-| 2 | 보강 실패 — stderr 전달 | 본인 Claude 에 stderr 노출, 응답에서 진단 진입 |
-| 그 외 | 비예상 오류 | warning 표시 (응답 차단 안 함) |
+| 15:02 | CTO 1차 답변 | AND 매칭 (PATTERN_TOKENS + PATTERN_VERBS) — Crunched 제외 |
+| 15:32 | 카맥 Phase 2 측정 발견 | AND 매칭 두 BUG 식별 (아래) |
+| 15:34 | CTO 2차 정정 | **단일 PATTERN_ACTIVE 채택** — 두 BUG 동시 해소 |
 
-### 5.1 정규식 근거 — AND 매칭 채택 (CTO 결정 2026-06-09 15:02)
+#### AND 매칭의 두 BUG (Deprecated)
 
-본인 (CTO) SSOT memory + 마크 사전 조사 §5 + 정민 카탈로그 S10 future-proof 권장 종합 결론.
+1. **PATTERN_VERBS 열거 누락**: Claude Code UI 가 새 동사 (`Combobulating` / `Transfiguring` / `Composing`) 를 지속 추가. 8 종 열거는 구조적 회귀 위험.
+2. **PATTERN_TOKENS 분 포맷 미지원**: `\([0-9]+s · [↑↓]` 는 `(15s · ↑ ...)` 매칭. 하지만 1분 이상 처리 시 `(1m 6s · ↑ ...)` 형식 → **미매칭 BUG** (false negative).
 
-#### PATTERN_TOKENS — 활성 토큰 카운터
-
-```
-\([0-9]+s · [↑↓]
-```
-
-처리 중인 동안 footer 영역에 표시되는 elapsed time + token counter 패턴 (예: `(12s · ↑ 1.4k tokens`). 활성 처리만 본 패턴을 표시 — 완료·idle 상태에서는 사라짐.
-
-#### PATTERN_VERBS — 활성 동사 (Crunched 제외)
+#### PATTERN_ACTIVE — 단일 패턴
 
 ```
-(Thinking|Envisioning|Crystallizing|Brewing|Billowing|Warping|Philosophising|Synthesizing)
+\(([0-9]+m )?[0-9]+s · [↑↓]
 ```
 
-Claude Code UI 의 활성 처리 동사 8 종. **`Crunched` 의도적 제외** — `Crunched for Ns · ↑ N tokens` 는 **완료** 메시지로 `PATTERN_TOKENS` 에 매칭되므로, `PATTERN_VERBS` 가 단독으로 차단해야 active false positive 방지.
+- 활성 토큰 카운터 footer 의 **괄호 + (옵션) 분 + 초 + 화살표** 매칭.
+- 예: `(15s · ↑ 234 tokens)`, `(1m 6s · ↓ 3.4k tokens)` — 모두 매칭.
+- Crunched 같은 완료 메시지 (`Crunched for 9s · ↑ 1.4k tokens`) 는 **괄호 부재** 로 자동 차단.
+- ERE 호환: `(...)` 은 단순 그룹 (캡처 결과 미사용). 카맥 원본 PCRE `(?:...)` 비포착 그룹 → grep -E ERE 호환 형식으로 마크 보강.
 
-#### AND 매칭의 정당성
+#### 단일 패턴의 정당성
 
-| 시나리오 | TOKENS | VERBS | AND 판정 |
-|---|---|---|---|
-| 활성 처리 중 (`Thinking… (12s · ↑ 1.4k tokens`) | ✓ | ✓ | **active** ✓ |
-| 완료 직후 (`Crunched for 9s · ↑ 1.4k tokens`) | ✓ | ✗ | **inactive** ✓ |
-| idle prompt (footer 없음) | ✗ | ✗ | **inactive** ✓ |
-| `esc to interrupt` 단독 (이전 출력 잔존) | ✗ | ✗ | **inactive** ✓ (false positive 차단) |
+| 시나리오 | PATTERN_ACTIVE 판정 |
+|---|---|
+| 활성 처리 중 (`Thinking (15s · ↑ 234 tokens)`) | **active** ✓ |
+| 활성 처리 중 (`Combobulating (15s · ↑ ...)` — 신규 동사) | **active** ✓ (동사 무관) |
+| 활성 처리 1분 초과 (`Thinking (1m 6s · ↓ 3.4k tokens)`) | **active** ✓ (분 포맷 지원) |
+| 완료 직후 (`Crunched for 9s · ↑ 1.4k tokens`) | **inactive** ✓ (괄호 부재) |
+| idle prompt (footer 없음) | **inactive** ✓ |
+| `esc to interrupt` 단독 (이전 출력 잔존) | **inactive** ✓ (괄호+화살표 부재) |
 
-**`esc to interrupt` 제외 사유**: footer 영역에 잔존하는 경우 false positive 위험 — `feedback_team_send_spinner_verify.md` 학습 교훈 (2026-06-09 CEO 직접 발동 사고).
+#### sleep 2.5 의 정당성
 
-#### sleep 2 의 정당성
-
-- 카맥 임계: 1M context TTFT p95 = 2.5s.
-- 2초 sleep 후 capture 시 활성 패턴 미표시면 Enter 미발동 확정 (마진 0.5s 내).
-- recall 우선 — false negative (active 인데 inactive 판정) 줄이는 방향.
+- 카맥 Phase 2 측정: 1M context TTFT p95 ≈ 2.5s.
+- 2.5초 sleep 후 capture 시 활성 패턴 미표시면 Enter 미발동 확정 (회귀 빈도 < 5%).
+- 카맥 측정 결과 사후 갱신 — 본 ADR §5.1 표 동기화 필수.
 
 #### 향후 future-proof
 
-- Claude Code 가 새 동사 추가 시 `PATTERN_VERBS` 갱신 — 정민 카탈로그 S10 권장.
-- `PATTERN_TOKENS` 는 footer 영역 UI 변경 영향. 변경 감지 시 본 ADR 후속 ADR 로 갱신.
+- **footer 영역 UI 변경 감지 시 본 ADR 후속 ADR 로 갱신**. 단일 패턴이므로 변경 반경 작음 (괄호·시간·화살표 부분만).
+- 동사 열거는 본 패턴 무관 — 본 부분의 회귀 위험 해소.
+- 정민 카탈로그 S10 future-proof 우려도 본 단일 패턴으로 해소 (시나리오 보정 필요 — 정민 PR open 후 흡수).
 
 ---
 
@@ -471,12 +452,12 @@ echo -e "${GREEN}✓${NC} ~/.claude/skills/team-send-verify/ 배포"
 
 ### 8.1 Hook 발동 자체 실패 시 (안전 기본값)
 
-본 hook 는 **exit 2 외에는 본인 Bash 호출을 차단하지 않음**:
-- exit 0: 정상 완료
-- exit 2: warning + stderr 노출, 단 Bash 결과 자체는 본인 Claude 에 전달됨
-- 비예상 exit (스크립트 오류 등): warning 만, 차단 없음 (Claude Code 기본 동작)
+본 hook 는 **항상 exit 0** (로그 전용 — 2026-07-09 이후):
+- exit 0: 로그 기록 후 정상 종료 (유일한 exit code)
+- 어떠한 경우에도 발신자 Bash 호출을 차단하지 않음
+- Hook 자체가 손상되어도 team-send 는 계속 작동
 
-→ Hook 가 망가져도 team-send 자체는 계속 작동.
+> ~~구 동작 (2026-06-09~2026-07-08): exit 2 + stderr 노출 → 2026-07-09 positive delivery 전환으로 제거.~~
 
 ### 8.2 응답 진입 실패 사고 발생 시
 
@@ -518,12 +499,13 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 3. **수신자 페인 capture 으로 메시지 전달 확인** ... (기존)
 4. **Enter 발동 확인** ... (기존)
 
-**자동화 보완 (2026-06-09 추가)**:
-- 본 repo `bin/team-send-verify.sh` PostToolUse Hook 가 위 3·4 단계를 자동 수행.
-- Hook 가 spinner 미확인 시 자동 Enter 보강 + exit 2 stderr 노출.
-- 발신자 Claude 는 Hook stderr 가 노출되면 즉시 진단 절차 진입 (기존 4단계 매뉴얼과 동일).
-- **Hook 도입 후에도 본 §8.2.1 4단계 의무는 유효** — Hook 는 보완책이지 면제책 아님.
-  Hook 실패 시 (jq 오류, tmux 비가용, 스크립트 손상) 매뉴얼 검증 fallback.
+**자동화 보완 현행 (2026-07-09 갱신)**:
+- `bin/team-send` 의 **positive delivery 루프** (§5.2) 가 3·4 단계를 대신 수행. Enter 발동 후 입력창 잔존 검사 + 필요 시 재발사(최대 3회). verify.sh Hook 는 로그 전용.
+- 전달 실패 시 team-send 가 ⚠️ stdout 경고 출력 → 발신자 수동 진단 절차 진입.
+- **본 §8.2.1 4단계 의무는 여전히 유효** — positive delivery 루프는 보완책이지 면제책 아님.
+  실제 소실(턴 경계 레이스 1/1680)은 감지 불가 → 수동 4단계 fallback.
+
+> ~~구 동작 (2026-06-09~2026-07-08): Hook 가 3·4단계 자동 수행 + spinner 미확인 시 Enter 보강 + exit 2 — 2026-07-09 positive delivery 전환으로 제거.~~
 
 **디버그 로그**: `tail -20 /tmp/team-send-verify.log` 으로 본 hook 발동 이력 확인.
 ```
@@ -535,12 +517,15 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 1. **본 ADR 승인** — 제임스 (CTO) 사인오프.
 2. **마크 (Developer) 위임** — `bin/team-send-verify.sh` 구현 + `setup-team.sh` 갱신 + `skills/team-send-verify/SKILL.md` 작성. Step 0 으로 §3.1 stdin 스키마 실측 dump.
 3. **정민 (QA) 테스트** — 다음 시나리오 회귀 시나리오:
-   - (T1) 정상 spinner 확인 → exit 0
-   - (T2) Enter 미발동 → 보강 후 spinner 확인 → exit 0
-   - (T3) Enter 보강 후에도 미발동 → exit 2 + stderr
-   - (T4) team-send 자체 실패 → hook 즉시 exit 0 (검증 skip)
-   - (T5) Bash 명령이 team-send 아님 → hook 즉시 exit 0
-3. **카맥 (Performance) 측정** — 추가 응답 지연 < 2초 목표 검증 (sleep 2 + capture + 정규식 매칭 부담).
+
+   > **주의 (2026-07-09 §5.2 positive delivery 전환)**: T1~T3 는 구 verify.sh blocking 동작 기준. 현행은 §5.2 positive delivery 루프가 delivery 확인을 담당하며 verify.sh 는 로그 전용(항상 exit 0). T4~T5 는 현행에도 유효.
+
+   - ~~(T1) 정상 spinner 확인 → exit 0~~ (구 동작)
+   - ~~(T2) Enter 미발동 → 보강 후 spinner 확인 → exit 0~~ (구 동작)
+   - ~~(T3) Enter 보강 후에도 미발동 → exit 2 + stderr~~ (구 동작 — exit 2 제거됨)
+   - (T4) team-send 자체 실패 → hook 즉시 exit 0 (검증 skip) ✅ 현행 유효
+   - (T5) Bash 명령이 team-send 아님 → hook 즉시 exit 0 ✅ 현행 유효
+3. **카맥 (Performance) 측정** — ~~추가 응답 지연 < 2초 목표 검증 (sleep 2 + capture + 정규식 매칭 부담)~~ → 2026-07-09 blocking 제거로 지연 없음. positive delivery 루프 0.7s×최대 3회(잔존 시만).
 4. **`_team-workflow.md` §8.2.1 본 ADR §9 초안 반영** — 별도 commit (메타 작업 push destination 표준 §메타 작업 push destination 표준 준수).
 
 ---
@@ -560,13 +545,9 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 
 ### (C) team-send 자체에 검증 내장 (PostToolUse 미사용)
 
-- team-send 셸 스크립트 끝에 sleep 2 + capture + Enter 보강 추가.
-- 장점: 의존성 단순화 (Hook + settings.json 등록 불필요).
-- 단점:
-  - 매 team-send 호출이 +2초 직렬 지연 (사용자 직접 호출 시에도).
-  - 발신자 Claude 가 sleep 2 결과를 무시할 수 없게 됨 — 의식적 fast-skip 옵션 불가.
-  - claude-code-guide 가 권장한 deterministic Hook 분리 패턴과 어긋남.
-- **거절** — 단 향후 hook 가 사용자 경험에 부담 시 재고 후보.
+- ~~거절~~ → **2026-07-09 채택** (positive delivery 방식으로 진화).
+- 구 거절 사유("+2초 직렬 지연")는 blocking 방식 전제. 신 방식은 0.7초×최대 3회(잔존 시만) 로 지연이 작고, 잔존 없는 정상 케이스는 0.7초 후 즉시 break.
+- PATTERN_ACTIVE footer 프록시 방식(Hook) 보다 입력창 잔존 직접 확인이 신뢰성 상위(네이선 Q3, 정민 6케이스 실측 통과).
 
 ### (D) 수신자 측 Hook (PreToolUse 또는 SessionStart)
 
@@ -579,13 +560,22 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 
 ## 12. 결과 요약
 
-- **+ ** 매 team-send 호출 자동 검증 → spinner 미확인 누락 99% 차단.
-- **+ ** 본 repo `setup-team.sh` 1회 실행으로 새 팀 셋업 시 자동 활성.
-- **+ ** 다른 Hook (rtk hook 등) 공존 — jq smart merge 로 보호.
-- **+ ** 본 hook 실패 시 team-send 자체는 계속 작동 (안전 기본값).
-- **− ** 응답 지연 +2초 (capture-pane race window).
-- **− ** jq 의존성 추가 (대부분 환경에 기설치, brew 1줄).
-- **− ** `~/.claude/settings.json` 사용자 전역 수정 — 다른 도구 충돌 시 진단 부담 (smart merge 로 완화).
+### 초기 도입 (2026-06-09)
+
+- **+ ** 매 team-send 호출 자동 검증 → spinner 미확인 누락 차단.
+- **+ ** `setup-team.sh` 1회 실행으로 새 팀 셋업 시 자동 활성.
+- **+ ** 다른 Hook 공존 — jq smart merge 보호.
+- **− ** PATTERN_ACTIVE footer 방식 → 1M context reasoning 중 오경보 43.5% (2026-07-09 진단).
+- **− ** 응답 지연 +2.5초 blocking.
+
+### 2026-07-09 설계 전환 후
+
+- **+ ** verify.sh 로그 전용 강등 → 오경보 43.5% → **0%** (실측).
+- **+ ** team-send positive delivery 루프 → 입력창 잔존 직접 확인, 미제출 시 재발사 최대 3회.
+- **+ ** blocking 제거 → 발신자 응답 지연 없음.
+- **+ ** paste-buffer race condition 부분 해소 (1/1680 소실은 accept-loss).
+- **± ** jq 의존성 유지 (verify.sh 가드 레이어 필요).
+- **− ** 실제 소실(턴 경계 레이스 1/1680)은 여전히 accept-loss — retransmit-on-empty 는 중복 전달 위험.
 
 ---
 
@@ -609,10 +599,10 @@ jq 'del(.hooks.PostToolUse[]?.hooks[]? | select(.command | endswith("team-send-v
 
 | # | 항목 | 결과 |
 |---|---|---|
-| 1 | §4.2 Hook 등록 위치 (b) 사용자 전역 | **동의** |
-| 2 | §5 sleep 2 + spinner 정규식 | **AND 매칭 채택** — `PATTERN_TOKENS` + `PATTERN_VERBS` (Crunched 제외) 반영 완료 (§5.1) |
-| 3 | §9 `_team-workflow.md` hybrid 정책 | **동의** — Hook 도입 후에도 매뉴얼 4단계 유지 |
-| 4 | §10 후속 흐름 | **동의** — 마크 본격 구현 즉시 진입, Step 0 (stdin 스키마) 생략 (마크 사전 조사 §2.1 완료) |
+| 1 | §4.2 Hook 등록 위치 (b) 사용자 전역 | **동의** (15:02) |
+| 2 | §5 sleep + spinner 정규식 | **단일 PATTERN_ACTIVE 채택** (15:34 정정) — `\(([0-9]+m )?[0-9]+s · [↑↓]` + `sleep 2.5`. 초기 AND 매칭 (15:02) 은 카맥 Phase 2 측정 (15:32) 의 두 BUG 발견으로 deprecated. 본 ADR §5/§5.1 단일 패턴으로 갱신. |
+| 3 | §9 `_team-workflow.md` hybrid 정책 | **동의** (15:02) — Hook 도입 후에도 매뉴얼 4단계 유지 |
+| 4 | §10 후속 흐름 | **동의** (15:02) — 마크 본격 구현 즉시 진입, Step 0 (stdin 스키마) 생략 (마크 사전 조사 §2.1 완료) |
 
 ### 후속 검증 (마크 PR open 단계)
 
