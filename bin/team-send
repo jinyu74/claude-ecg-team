@@ -178,4 +178,32 @@ fi
 sleep "$SLEEP_SEC"
 tmux send-keys -t "$TARGET" Enter
 
+# ── positive delivery 확인 (Enter 발동 후 입력창 잔존 체크) ─────────
+# 판정 신호 (❯ 이후 입력창 구간만 검사 — transcript 에코 제외):
+#   (1) "Press up to edit queued" — 큐잉 성공 → OK
+#   (2) "Pasted text"             — collapse placeholder 잔존(긴 메시지) → 미제출
+#   (3) MSG_PROBE                 — 짧은 메시지 비-collapse 잔존 안전망
+# blind-Enter 안전장치: (2)(3) 신호가 ❯ 이후 구간에 있을 때만 재발사.
+MSG_PROBE="$(printf '%s' "$PAYLOAD" | head -1 | cut -c1-25)"
+_DELIVERED=1
+for _i in 1 2 3; do
+    sleep 0.7
+    _CAP="$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -20)"
+    # 큐잉 성공 신호 → 즉시 OK
+    printf '%s' "$_CAP" | grep -qF "Press up to edit queued" && { _DELIVERED=1; break; }
+    # ❯ 이후 구간(입력창)만 추출 — transcript 에코 방지 (마지막 ❯ 기준)
+    _INPUT_AREA="$(printf '%s' "$_CAP" | awk '/❯/{buf=""; found=1} found{buf=buf$0 ORS} END{printf "%s", buf}')"
+    # 잔존 검사 먼저 — 입력창에 [Pasted text] 또는 MSG_PROBE 있으면 확정 미제출 → 재발사
+    # (제출 성공이면 paste 가 transcript 로 이동해 입력창에서 사라지므로 잔존 = 미제출 확정)
+    if printf '%s' "$_INPUT_AREA" | grep -qF "Pasted text" || \
+       { [ -n "$MSG_PROBE" ] && printf '%s' "$_INPUT_AREA" | grep -qF "$MSG_PROBE"; }; then
+        tmux send-keys -t "$TARGET" Enter 2>/dev/null
+        _DELIVERED=0
+    else
+        _DELIVERED=1; break  # 입력창 비어있음 = 제출 성공 (esc든 idle 이든 무관)
+    fi
+done
+# 3회 소진 후 잔존 신호 잔류 시 경고 — 수동 확인 유도
+[ "$_DELIVERED" -eq 0 ] && echo "⚠️ ${SENDER} → ${RECIPIENT_NAME} delivery 미확인 — 수동 확인 권장" >&2
+
 echo "✅ ${SENDER} → ${RECIPIENT_NAME} (pane ${IDX}, ${PAYLOAD_BYTES}B)"
