@@ -88,26 +88,31 @@
 
 ### 2.1 브랜치 명명 규칙
 
-- **개발 통합 브랜치**: `develop/<product>/<version>`
-  - 예: `develop/decg-link/v1.0.0.0`
-- **태스크 브랜치 (개발 모드)**: `develop/<product>/<jira-key>` (Jira 키는 소문자)
-  - 예: `develop/decg-link/tecg-123`
+> **명명 형태는 워크스페이스마다 다르다.** `develop` 과 제품/스코프의 **순서·구분자**가 리포별로 다르므로, 절대 표기로 외우지 말고 **각 리포의 실제 머지 이력과 프로젝트 메모리(`project-*`)를 SSOT** 로 삼는다(§1 예시값 원칙과 동일). 대표 형태.
+>
+> - **decg-go-monorepo**: `<product>/develop/v<version>` — 예: `decg-link/develop/v1.0.0.0`, `sftp-client/develop/v1.0.0.0` (제품이 앞, `develop` 이 중간). CI 트리거·nightly 스캔이 `**/develop/v*` 패턴으로 이 형태를 잡는다.
+> - **다른 프로젝트는 `develop/<product-v>` 형태(`develop` 이 앞)일 수 있다** — 예: decg-be-monorepo 의 `develop/UNIV-v1.0.0.0`. 새 워크스페이스에 합류하면 이 변형 가능성을 먼저 인지하고, 실제 머지 이력으로 컨벤션을 확정한 뒤 브랜치를 만든다.
+>
+> 아래 항목과 본 문서 이하의 `develop/...` 예시 표기는 모두 **해당 리포 컨벤션으로 대체**해서 읽는다.
+
+- **개발 통합 브랜치**: 리포 컨벤션의 버전 자리에 버전. 예(decg-go): `decg-link/develop/v1.0.0.0`.
+- **태스크 브랜치 (개발 모드)**: 통합 브랜치 컨벤션을 따르되 버전 자리에 Jira 키(소문자), 또는 리포가 쓰는 단기 브랜치 규칙. 정확한 형태는 해당 리포 이력을 따른다.
 - **분석/문서 브랜치 (분석 모드)**: `analysis/<topic>` 또는 `docs/<topic>`
   - 예: `analysis/legacy-auth-audit`, `docs/architecture-current-state`
 - 메인: `main` (배포 가능한 안정 상태만 머지).
 
 ### 2.2 생성 기준
 
-- 개발 통합 브랜치는 **항상 `main` 에서 분기**한다.
+- 개발 통합 브랜치는 **항상 `main` 에서 분기**한다. (예시는 decg-go 컨벤션 `<product>/develop/v<version>`. 다른 리포는 §2.1 의 해당 형태로 대체.)
   ```bash
   git checkout main && git pull
-  git checkout -b develop/decg-link/v1.0.0.0
-  git push -u origin develop/decg-link/v1.0.0.0
+  git checkout -b decg-link/develop/v1.0.0.0
+  git push -u origin decg-link/develop/v1.0.0.0
   ```
 - 태스크 브랜치는 **항상 해당 프로젝트의 개발 통합 브랜치에서 분기**한다.
   ```bash
-  git checkout develop/decg-link/v1.0.0.0 && git pull
-  git checkout -b develop/decg-link/tecg-123
+  git checkout decg-link/develop/v1.0.0.0 && git pull
+  git checkout -b decg-link/develop/tecg-123
   ```
 - 분석/문서 브랜치는 `main` 에서 분기한다 (산출물이 운영 코드와 무관).
 
