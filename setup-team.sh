@@ -11,15 +11,18 @@ NC='\033[0m'
 
 SESSION=""
 
-# ── 옵션 파싱: [세션이름] [-d|--dir <workdir>] ──
+# ── 옵션 파싱: [세션이름] [-d|--dir <workdir>] [-c|--config <members.conf>] ──
 WORKDIR=""
+MEMBERS_FILE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -d|--dir) WORKDIR="$2"; shift 2 ;;
+        -c|--config) MEMBERS_FILE="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [session-name] [-d|--dir <workdir>]"
+            echo "Usage: $0 [session-name] [-d|--dir <workdir>] [-c|--config <members.conf>]"
             echo "  session-name : tmux 세션 이름 (기본: team)"
             echo "  -d, --dir    : 작업 디렉터리 (기본: 현재 디렉터리)"
+            echo "  -c, --config : 멤버 설정 파일 (기본: 저장소의 members.conf)"
             exit 0 ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) SESSION="$1"; shift ;;
@@ -29,6 +32,12 @@ SESSION="${SESSION:-team}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROLES_DIR="$SCRIPT_DIR/roles"
+
+# 멤버 설정 로드 — 형식 오류는 tmux 세션을 만들기 전에 실패시킨다.
+. "$SCRIPT_DIR/lib/members.sh"
+MEMBERS_FILE="${MEMBERS_FILE:-$SCRIPT_DIR/members.conf}"
+[ -f "$MEMBERS_FILE" ] && MEMBERS_FILE="$(cd "$(dirname "$MEMBERS_FILE")" && pwd)/$(basename "$MEMBERS_FILE")"
+load_members "$MEMBERS_FILE" || exit 1
 WORKDIR="${WORKDIR:-$PWD}"
 if [ ! -d "$WORKDIR" ]; then
     echo -e "\033[0;36m📁 작업 디렉터리 생성: $WORKDIR\033[0m"
@@ -39,7 +48,7 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
-# ── 유틸: 파인에 패턴이 나타날 때까지 대기 ──────────────────
+# ── 유틸: 페인에 패턴이 나타날 때까지 대기 ──────────────────
 wait_for_pane() {
     local pane="$1" pattern="$2" timeout="${3:-30}" waited=0
     while [ $waited -lt $timeout ]; do
@@ -51,7 +60,7 @@ wait_for_pane() {
 
 # ── 유틸: Claude 실행 + 다이얼로그 자동 처리 ────────────────
 start_claude_in_pane() {
-    local pane="$1" model="${2:-claude-sonnet-5-5}" role_file="${3:-}" effort="${4:-high}"
+    local pane="$1" model="$2" role_file="${3:-}" effort="$4"
     local claude_bin; claude_bin="$(command -v claude)"
 
     tmux send-keys -t "$pane" C-c 2>/dev/null; sleep 0.3
@@ -120,6 +129,7 @@ echo "  ✅ claude $(claude --version 2>/dev/null | head -1)"
 [ "$JQ_OK" -eq 1 ] && echo "  ✅ jq $(jq --version 2>/dev/null)"
 echo "  📂 작업 디렉터리: $WORKDIR"
 echo "  🏷️  세션 이름: $SESSION"
+echo "  👥 멤버 설정: $MEMBERS_FILE (${M_COUNT}명)"
 
 # ── [0.5/4] team-send-verify hook + 스킬 배포 (사용자 전역) ─────────────
 # 본 단계는 jq 가 있을 때만 hook 등록 진행. 스킬은 jq 없이도 배포.
@@ -213,16 +223,32 @@ fi
 # ── [2/4] TMUX 세션 & 레이아웃 구성 ────────────────────────
 echo -e "\n${YELLOW}[2/4] TMUX 세션 & 레이아웃 구성...${NC}"
 
+# 레이아웃: 첫 멤버는 좌측 메인, 나머지는 우측 2열 그리드에 행 우선 배치.
+#   ┌─────────┬──────────┬──────────┐
+#   │         │ 1        │ 2        │
+#   │ 0       ├──────────┼──────────┤
+#   │ (메인)  │ 3        │ 4        │
+#   │         ├──────────┼──────────┤
+#   │         │ 5        │ 6        │   ← 멤버 수가 짝수(우측 홀수)면 마지막 행은 1칸
+#   └─────────┴──────────┴──────────┘
+# tmux 페인 인덱스는 레이아웃 트리 순회 순서(= 위 그림의 행 우선)로 매겨진다.
+# 분할 도중 인덱스 변동을 피하기 위해 페인 ID(#{pane_id}) 로 추적하고, 마지막에 인덱스를 검증한다.
+RIGHT_COUNT=$((M_COUNT - 1))
+ROWS=$(( (RIGHT_COUNT + 1) / 2 ))
+
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 340)
 TERM_HEIGHT=$(tput lines 2>/dev/null || echo 85)
-# 1:3:3 레이아웃 — CTO + 중앙 컬럼 3명 + 우측 컬럼 3명. 최소 폭 보강.
+# 최소 크기 보강 — 행당 최소 14줄 확보
+MIN_HEIGHT=$(( ROWS * 14 )); [ "$MIN_HEIGHT" -lt 85 ] && MIN_HEIGHT=85
 [ "${TERM_WIDTH:-0}" -lt 300 ] && TERM_WIDTH=340
-[ "${TERM_HEIGHT:-0}" -lt 40 ] && TERM_HEIGHT=85
+[ "${TERM_HEIGHT:-0}" -lt "$MIN_HEIGHT" ] && TERM_HEIGHT=$MIN_HEIGHT
 
 MAIN_WIDTH=180
 RIGHT_AREA_WIDTH=$((TERM_WIDTH - MAIN_WIDTH - 1))
 
 tmux new-session -d -s "$SESSION" -x "$TERM_WIDTH" -y "$TERM_HEIGHT"
+# team-send 가 이 세션의 멤버 설정을 찾을 수 있도록 세션 옵션에 기록
+tmux set-option -t "$SESSION" @team_members_file "$MEMBERS_FILE"
 
 # 페인 보더·타이틀 옵션을 분할 전에 활성화해야 페인 생성 시점부터 보더가 그려진다.
 # pane_title 은 Claude Code 가 OSC 2 escape 로 task 설명을 덮어쓰므로 우리 역할명이 사라진다.
@@ -231,67 +257,50 @@ tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{@role} "
 tmux set-option -t "$SESSION" allow-rename off
 
-# 레이아웃 (1:3:3):
-#   ┌─────────┬──────────┬──────────┐
-#   │         │ 네이선   │ 수진     │  ← top row
-#   │ 제임스  ├──────────┼──────────┤
-#   │ (CTO)   │ 마크     │ 정민     │  ← mid row
-#   │         ├──────────┼──────────┤
-#   │         │ 수영     │ 카맥     │  ← bot row
-#   └─────────┴──────────┴──────────┘
-# tmux 는 페인 인덱스를 시각적 row-major 순서로 재정렬하므로
-# 최종 인덱스: 0=제임스, 1=네이선, 2=수진, 3=마크, 4=정민, 5=수영, 6=카맥.
-# 분할 도중 인덱스 변동을 피하기 위해 페인 ID(#{pane_id}) 로 추적한다.
+PANE_IDS=("$(tmux display-message -p -t "$SESSION:0.0" '#{pane_id}')")
 
-P_JAMES=$(tmux display-message -p -t "$SESSION:0.0" '#{pane_id}')
+if [ "$ROWS" -gt 0 ]; then
+    # Phase 1: 좌측 메인 + 우측 영역
+    ROW_IDS=("$(tmux split-window -h -P -F '#{pane_id}' -t "${PANE_IDS[0]}" -l "$RIGHT_AREA_WIDTH")")
+    # Phase 2: 우측 영역을 ROWS 행으로 균등 분할 (남은 영역에서 아래쪽을 계속 떼어냄)
+    r=1
+    while [ $r -lt $ROWS ]; do
+        ROW_IDS[$r]=$(tmux split-window -v -P -F '#{pane_id}' -t "${ROW_IDS[$((r - 1))]}" -p $(( 100 * (ROWS - r) / (ROWS - r + 1) )))
+        r=$((r + 1))
+    done
+    # Phase 3: 각 행을 좌·우로 분할 (마지막 행은 남은 멤버가 1명이면 분할하지 않음)
+    r=0
+    while [ $r -lt $ROWS ]; do
+        PANE_IDS[${#PANE_IDS[@]}]="${ROW_IDS[$r]}"
+        if [ $(( 2 * r + 2 )) -le "$RIGHT_COUNT" ]; then
+            PANE_IDS[${#PANE_IDS[@]}]=$(tmux split-window -h -P -F '#{pane_id}' -t "${ROW_IDS[$r]}" -p 50)
+        fi
+        r=$((r + 1))
+    done
+fi
 
-# Phase 1: 좌측 메인 + 우측 영역
-P_MIDCOL_TOP=$(tmux split-window -h -P -F '#{pane_id}' -t "$P_JAMES" -l "$RIGHT_AREA_WIDTH")
+# 페인 역할명 설정 — per-pane user option @role (Claude OSC 2 영향 없음)
+i=0
+while [ $i -lt $M_COUNT ]; do
+    tmux set-option -p -t "${PANE_IDS[$i]}" @role "${M_LABEL[$i]}"
+    i=$((i + 1))
+done
 
-# Phase 2: 중앙 컬럼을 3행으로 분할
-P_MIDCOL_MID=$(tmux split-window -v -P -F '#{pane_id}' -t "$P_MIDCOL_TOP" -p 67)
-P_MIDCOL_BOT=$(tmux split-window -v -P -F '#{pane_id}' -t "$P_MIDCOL_MID" -p 50)
-
-# Phase 3: 각 행을 좌(중앙 컬럼) + 우(오른쪽 컬럼) 으로 분할
-P_RIGHTCOL_TOP=$(tmux split-window -h -P -F '#{pane_id}' -t "$P_MIDCOL_TOP" -p 50)
-P_RIGHTCOL_MID=$(tmux split-window -h -P -F '#{pane_id}' -t "$P_MIDCOL_MID" -p 50)
-P_RIGHTCOL_BOT=$(tmux split-window -h -P -F '#{pane_id}' -t "$P_MIDCOL_BOT" -p 50)
-
-# 시각적 row-major 인덱스 순서로 멤버 배치 (페인 ID 배열)
-#   0=제임스 / 1=네이선 / 2=수진 / 3=마크 / 4=정민 / 5=수영 / 6=카맥
-PANE_IDS=(
-    "$P_JAMES"
-    "$P_MIDCOL_TOP"
-    "$P_RIGHTCOL_TOP"
-    "$P_MIDCOL_MID"
-    "$P_RIGHTCOL_MID"
-    "$P_MIDCOL_BOT"
-    "$P_RIGHTCOL_BOT"
-)
-
-# 파인 역할명 설정 — per-pane user option @role (Claude OSC 2 영향 없음)
-tmux set-option -p -t "$P_JAMES"        @role "제임스 CTO"
-tmux set-option -p -t "$P_MIDCOL_TOP"   @role "네이선 Architect"
-tmux set-option -p -t "$P_RIGHTCOL_TOP" @role "수진 Researcher"
-tmux set-option -p -t "$P_MIDCOL_MID"   @role "마크저커버그 Developer"
-tmux set-option -p -t "$P_RIGHTCOL_MID" @role "정민 QA·Reviewer"
-tmux set-option -p -t "$P_MIDCOL_BOT"   @role "수영 UI/UX Designer"
-tmux set-option -p -t "$P_RIGHTCOL_BOT" @role "카맥 Performance Engineer"
-
-echo "  ✅ 레이아웃 구성 완료 (7 panes, 1:3:3)"
+echo "  ✅ 레이아웃 구성 완료 (${M_COUNT} panes, 메인 1 + 우측 ${ROWS}행 × 2열)"
 
 # ── 페인 매핑 자가 검증 ────────────────────────────────────
-# team-send 의 이름→인덱스 매핑은 row-major 시각 인덱스 가정에 의존.
+# team-send 는 members.conf 의 행 순서를 페인 인덱스로 사용한다.
 # tmux 동작 차이·레이아웃 변경으로 어긋나면 메시지가 다른 멤버에게 오배달되므로
 # Claude 기동 전에 인덱스↔역할 일치를 검증한다.
-EXPECTED_ROLES=("제임스 CTO" "네이선 Architect" "수진 Researcher" "마크저커버그 Developer" "정민 QA·Reviewer" "수영 UI/UX Designer" "카맥 Performance Engineer")
 MAPPING_OK=1
-for i in 0 1 2 3 4 5 6; do
+i=0
+while [ $i -lt $M_COUNT ]; do
     actual="$(tmux display-message -p -t "$SESSION:0.$i" '#{@role}' 2>/dev/null)"
-    if [ "$actual" != "${EXPECTED_ROLES[$i]}" ]; then
-        echo -e "  ${RED}❌ pane $i: 기대 '${EXPECTED_ROLES[$i]}' ≠ 실제 '$actual'${NC}"
+    if [ "$actual" != "${M_LABEL[$i]}" ]; then
+        echo -e "  ${RED}❌ pane $i: 기대 '${M_LABEL[$i]}' ≠ 실제 '$actual'${NC}"
         MAPPING_OK=0
     fi
+    i=$((i + 1))
 done
 if [ "$MAPPING_OK" -eq 1 ]; then
     echo -e "  ${GREEN}✅ 페인 인덱스 ↔ 역할 매핑 일치 (team-send 기준)${NC}"
@@ -302,42 +311,24 @@ else
 fi
 
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
-echo -e "\n${YELLOW}[3/4] Claude 실행 중... (파인당 최대 1분)${NC}"
+echo -e "\n${YELLOW}[3/4] Claude 실행 중... (페인당 최대 1분)${NC}"
 
-# MEMBER_NAMES/MODELS/EFFORTS 순서는 PANE_IDS 와 동일한 row-major 시각 인덱스를 따른다.
-#   0=제임스 / 1=네이선 / 2=수진 / 3=마크 / 4=정민 / 5=수영 / 6=카맥
-# 모델 배정 원칙 (2026-10-01 갱신 — Opus 4.8 / Sonnet 4.6 → 5.5 세대):
-#   - Opus 5.5 ($4/$20): 의사결정·아키텍처·구현 품질·머지 게이트 (영향 大)
-#   - Sonnet 5.5 (1M, $2/$10): 조사·측정 등 고빈도 반복 작업 + 큰 컨텍스트
-#   - Fable 5.1 ($10/$50): 기본 배정 안 함. 응답이 길어 페인 간 협업 병목 — 대규모 설계 시 세션 단위 /model 전환
-#   - Haiku 4.5: 미사용 (200K 컨텍스트, Sonnet 5.5 대비 절감 폭 작음)
-# effort: 품질 게이트·설계·구현은 xhigh, 오케스트레이션은 high, 조사·측정·UI 는 medium.
-MEMBER_NAMES=("제임스" "네이선" "수진" "마크저커버그" "정민" "수영" "카맥")
-MEMBER_MODELS=(
-    "claude-opus-5-5"        # 제임스 CTO — 전략 결정·릴리스 사인오프·모니터링
-    "claude-opus-5-5"        # 네이선 Architect — 아키텍처 결정·ADR
-    "claude-sonnet-5-5[1m]"  # 수진 Researcher — 문서 조회·비교에 충분
-    "claude-opus-5-5"        # 마크 Developer — 구현 품질 머지 게이트의 입구. 고빈도 코드 작성
-    "claude-opus-5-5"        # 정민 QA·Reviewer — 머지 게이트 (CRITICAL 누락 비용 ↑)
-    "claude-sonnet-5-5[1m]"  # 수영 UI/UX — 현 백엔드 프로젝트 한정 (UI 작업 최소). 프런트 프로젝트면 claude-opus-5-5 로 상향
-    "claude-sonnet-5-5[1m]"  # 카맥 Performance — 측정 반복 최다. 1M 컨텍스트로 auto-compact 완화
-)
-MEMBER_EFFORTS=("high" "xhigh" "medium" "xhigh" "xhigh" "medium" "medium")
-
-for i in 0 1 2 3 4 5 6; do
-    name="${MEMBER_NAMES[$i]}"
+# 멤버별 모델·effort·역할 파일은 members.conf 가 단일 소스.
+i=0
+while [ $i -lt $M_COUNT ]; do
     pane_id="${PANE_IDS[$i]}"
-    role_file="$ROLES_DIR/$name.md"
+    role_file="$ROLES_DIR/${M_ROLE[$i]}.md"
     if [ ! -f "$role_file" ]; then
         echo -e "  ${YELLOW}⚠️  역할 파일 없음: $role_file (역할 미주입)${NC}"
         role_file=""
     fi
-    echo -n "  Pane $i ($name): "
-    start_claude_in_pane "$pane_id" "${MEMBER_MODELS[$i]}" "$role_file" "${MEMBER_EFFORTS[$i]}"
+    echo -n "  Pane $i (${M_NAME[$i]} · ${M_MODEL[$i]} · ${M_EFFORT[$i]}): "
+    start_claude_in_pane "$pane_id" "${M_MODEL[$i]}" "$role_file" "${M_EFFORT[$i]}"
 
     tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "bypass permissions" \
         && echo -e "${GREEN}✅ 준비 완료${NC}" \
         || echo -e "${RED}⚠️  타임아웃 — 수동 확인 필요${NC}"
+    i=$((i + 1))
 done
 
 # ── [4/4] 완료 ──────────────────────────────────────────────

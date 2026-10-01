@@ -276,7 +276,7 @@ dev 브랜치 (모든 Sub-task 완료) → 제임스 (릴리스 사인오프) �
 | 5 | UI/UX | 수영 | suyoung, design, designer |
 | 6 | Performance | 카맥 | carmack, perf, performance |
 
-> 위 인덱스는 `setup-team.sh` 의 1:3:3 레이아웃(row-major)과 `bin/team-send` 의 매핑이 기준이다. 페인 번호를 직접 쓰지 말고 가급적 **이름으로** `team-send` 를 호출한다.
+> 위 인덱스는 팀 저장소 `members.conf` 의 행 순서가 기준이며 `setup-team.sh`·`team-send` 가 같은 파일을 읽는다. 실제 구성은 `team-send -h` 로 확인한다. 페인 번호를 직접 쓰지 말고 가급적 **이름으로** `team-send` 를 호출한다.
 
 ### 8.2 송신 (team-send 헬퍼)
 
