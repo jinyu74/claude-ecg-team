@@ -272,62 +272,99 @@ fi
 # ── [2/4] TMUX 세션 & 레이아웃 구성 ────────────────────────
 echo -e "\n${YELLOW}[2/4] TMUX 세션 & 레이아웃 구성...${NC}"
 
-# 레이아웃: 첫 멤버는 좌측 메인, 나머지는 우측 2열 그리드에 행 우선 배치.
+# members.conf 의 [창이름] 구획마다 tmux 창 하나. 구획이 없으면 창 'team' 하나.
+# 창마다 레이아웃: 그 창의 첫 멤버는 좌측 메인, 나머지는 우측 2열 그리드에 행 우선 배치.
 #   ┌─────────┬──────────┬──────────┐
-#   │         │ 1        │ 2        │
-#   │ 0       ├──────────┼──────────┤
-#   │ (메인)  │ 3        │ 4        │
+#   │         │ 2번째    │ 3번째    │
+#   │ 첫 멤버 ├──────────┼──────────┤
+#   │ (메인)  │ 4번째    │ 5번째    │
 #   │         ├──────────┼──────────┤
-#   │         │ 5        │ 6        │   ← 멤버 수가 짝수(우측 홀수)면 마지막 행은 1칸
+#   │         │ 6번째    │ 7번째    │   ← 우측 인원이 홀수면 마지막 행은 1칸
 #   └─────────┴──────────┴──────────┘
-# tmux 페인 인덱스는 레이아웃 트리 순회 순서(= 위 그림의 행 우선)로 매겨진다.
-# 분할 도중 인덱스 변동을 피하기 위해 페인 ID(#{pane_id}) 로 추적하고, 마지막에 인덱스를 검증한다.
-RIGHT_COUNT=$((M_COUNT - 1))
-ROWS=$(( (RIGHT_COUNT + 1) / 2 ))
+# 페인은 ID(#{pane_id}) 로 추적하고 @member 태그로 찾으므로 tmux 인덱스·창 번호와 무관하다.
+# 같은 창의 멤버는 members.conf 에서 연속이다 (lib/members.sh 가 중복 구획을 거부).
+
+# 창별 우측 행 수 중 최댓값으로 터미널 최소 높이를 정한다.
+MAX_ROWS=0
+w=0
+while [ $w -lt $W_COUNT ]; do
+    n=0; i=0
+    while [ $i -lt $M_COUNT ]; do [ "${M_WINDOW[$i]}" = "${W_NAME[$w]}" ] && n=$((n + 1)); i=$((i + 1)); done
+    rows=$(( n / 2 )); [ $rows -gt $MAX_ROWS ] && MAX_ROWS=$rows
+    w=$((w + 1))
+done
 
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 340)
 TERM_HEIGHT=$(tput lines 2>/dev/null || echo 85)
 # 최소 크기 보강 — 행당 최소 14줄 확보
-MIN_HEIGHT=$(( ROWS * 14 )); [ "$MIN_HEIGHT" -lt 85 ] && MIN_HEIGHT=85
+MIN_HEIGHT=$(( MAX_ROWS * 14 )); [ "$MIN_HEIGHT" -lt 85 ] && MIN_HEIGHT=85
 [ "${TERM_WIDTH:-0}" -lt 300 ] && TERM_WIDTH=340
 [ "${TERM_HEIGHT:-0}" -lt "$MIN_HEIGHT" ] && TERM_HEIGHT=$MIN_HEIGHT
 
 MAIN_WIDTH=180
 RIGHT_AREA_WIDTH=$((TERM_WIDTH - MAIN_WIDTH - 1))
 
-tmux new-session -d -s "$SESSION" -x "$TERM_WIDTH" -y "$TERM_HEIGHT"
-# team-send 가 이 세션의 멤버 설정을 찾을 수 있도록 세션 옵션에 기록
-tmux set-option -t "$SESSION" @team_members_file "$MEMBERS_FILE"
-
-# 페인 보더·타이틀 옵션을 분할 전에 활성화해야 페인 생성 시점부터 보더가 그려진다.
-# pane_title 은 Claude Code 가 OSC 2 escape 로 task 설명을 덮어쓰므로 우리 역할명이 사라진다.
-# 회피책: per-pane user option @role 에 역할명을 저장하고 보더 포맷이 @role 을 표시.
-tmux set-option -t "$SESSION" pane-border-status top
-tmux set-option -t "$SESSION" pane-border-format " #{@role} "
-tmux set-option -t "$SESSION" allow-rename off
-
-# 첫 페인 — tmux base-index 설정과 무관하게 세션의 활성 페인으로 잡는다.
-PANE_IDS=("$(tmux display-message -p -t "$SESSION" '#{pane_id}')")
-
-if [ "$ROWS" -gt 0 ]; then
+# build_window <첫 페인 ID> <첫 멤버 인덱스> <멤버 수> — 창 하나를 분할하고 PANE_IDS 에 멤버 순서대로 추가
+build_window() {
+    local first="$1" start="$2" count="$3"
+    local right=$((count - 1)) rows=$(( count / 2 )) r
+    local row_ids=()
+    PANE_IDS[$start]="$first"
+    [ $rows -gt 0 ] || return 0
     # Phase 1: 좌측 메인 + 우측 영역
-    ROW_IDS=("$(tmux split-window -h -P -F '#{pane_id}' -t "${PANE_IDS[0]}" -l "$RIGHT_AREA_WIDTH")")
-    # Phase 2: 우측 영역을 ROWS 행으로 균등 분할 (남은 영역에서 아래쪽을 계속 떼어냄)
+    row_ids[0]=$(tmux split-window -h -P -F '#{pane_id}' -t "$first" -l "$RIGHT_AREA_WIDTH")
+    # Phase 2: 우측 영역을 rows 행으로 균등 분할 (남은 영역에서 아래쪽을 계속 떼어냄)
     r=1
-    while [ $r -lt $ROWS ]; do
-        ROW_IDS[$r]=$(tmux split-window -v -P -F '#{pane_id}' -t "${ROW_IDS[$((r - 1))]}" -p $(( 100 * (ROWS - r) / (ROWS - r + 1) )))
+    while [ $r -lt $rows ]; do
+        row_ids[$r]=$(tmux split-window -v -P -F '#{pane_id}' -t "${row_ids[$((r - 1))]}" -p $(( 100 * (rows - r) / (rows - r + 1) )))
         r=$((r + 1))
     done
     # Phase 3: 각 행을 좌·우로 분할 (마지막 행은 남은 멤버가 1명이면 분할하지 않음)
     r=0
-    while [ $r -lt $ROWS ]; do
-        PANE_IDS[${#PANE_IDS[@]}]="${ROW_IDS[$r]}"
-        if [ $(( 2 * r + 2 )) -le "$RIGHT_COUNT" ]; then
-            PANE_IDS[${#PANE_IDS[@]}]=$(tmux split-window -h -P -F '#{pane_id}' -t "${ROW_IDS[$r]}" -p 50)
+    while [ $r -lt $rows ]; do
+        PANE_IDS[$((start + 1 + 2 * r))]="${row_ids[$r]}"
+        if [ $(( 2 * r + 2 )) -le $right ]; then
+            PANE_IDS[$((start + 2 + 2 * r))]=$(tmux split-window -h -P -F '#{pane_id}' -t "${row_ids[$r]}" -p 50)
         fi
         r=$((r + 1))
     done
-fi
+}
+
+PANE_IDS=()
+WINDOW_IDS=()
+start=0
+w=0
+while [ $w -lt $W_COUNT ]; do
+    count=0
+    while [ $((start + count)) -lt $M_COUNT ] && [ "${M_WINDOW[$((start + count))]}" = "${W_NAME[$w]}" ]; do
+        count=$((count + 1))
+    done
+    if [ $w -eq 0 ]; then
+        tmux new-session -d -s "$SESSION" -n "${W_NAME[$w]}" -x "$TERM_WIDTH" -y "$TERM_HEIGHT"
+        # team-send 가 이 세션의 멤버 설정을 찾을 수 있도록 세션 옵션에 기록
+        tmux set-option -t "$SESSION" @team_members_file "$MEMBERS_FILE"
+        # 첫 페인 — tmux base-index 설정과 무관하게 세션의 활성 페인으로 잡는다.
+        first="$(tmux display-message -p -t "$SESSION" '#{pane_id}')"
+    else
+        first="$(tmux new-window -d -P -F '#{pane_id}' -t "$SESSION:" -n "${W_NAME[$w]}")"
+    fi
+    WINDOW_IDS[$w]="$(tmux display-message -p -t "$first" '#{window_id}')"
+
+    # 페인 보더·타이틀 옵션(창 옵션)을 분할 전에 활성화해야 페인 생성 시점부터 보더가 그려진다.
+    # pane_title 은 Claude Code 가 OSC 2 escape 로 task 설명을 덮어쓰므로 우리 역할명이 사라진다.
+    # 회피책: per-pane user option @role 에 역할명을 저장하고 보더 포맷이 @role 을 표시.
+    tmux set-option -w -t "${WINDOW_IDS[$w]}" pane-border-status top
+    tmux set-option -w -t "${WINDOW_IDS[$w]}" pane-border-format " #{@role} "
+    tmux set-option -w -t "${WINDOW_IDS[$w]}" allow-rename off
+    tmux set-option -w -t "${WINDOW_IDS[$w]}" automatic-rename off
+
+    build_window "$first" "$start" "$count"
+    echo "  ✅ 창 '${W_NAME[$w]}' — ${count}명 (메인 1 + 우측 $(( count / 2 ))행 × 2열)"
+    start=$((start + count))
+    w=$((w + 1))
+done
+# 첫 창을 띄운 상태로 attach
+tmux select-window -t "${WINDOW_IDS[0]}"
 
 # 페인 태그 — @role: 보더 표시용 라벨 (Claude OSC 2 영향 없음)
 #             @member: members.conf 행 번호. team-send·team-status 는 tmux 인덱스가 아니라 이 태그로 페인을 찾는다.
@@ -338,7 +375,7 @@ while [ $i -lt $M_COUNT ]; do
     i=$((i + 1))
 done
 
-echo "  ✅ 레이아웃 구성 완료 (${M_COUNT} panes, 메인 1 + 우측 ${ROWS}행 × 2열)"
+echo "  ✅ 레이아웃 구성 완료 (${M_COUNT} panes, ${W_COUNT}개 창)"
 
 # ── 페인 매핑 자가 검증 ────────────────────────────────────
 # team-send 는 @member 태그로 수신 페인을 찾는다. 태그가 어긋나면 메시지가 다른 멤버에게

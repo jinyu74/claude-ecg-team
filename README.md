@@ -143,8 +143,22 @@ team-status --watch 10        # 10초마다 갱신
 정민   | 정민         | 정민 QA·Reviewer       | codex  | gpt-6.1-sol     | xhigh | jungmin qa reviewer
 ```
 
-- **행 순서 = 멤버 번호.** 첫 행은 좌측 메인 페인, 나머지는 우측 2열 그리드에 행 우선으로 배치됩니다.
+- **행 순서 = 멤버 번호.**
+- **`[창이름]` 줄로 tmux 창을 나눕니다.** 구획 아래 멤버들이 그 창에 들어가고, 구획이 없으면 창 `team` 하나입니다.
+  같은 창 이름을 두 번 쓸 수 없습니다(창의 멤버는 연속으로 적습니다).
+- 창마다 첫 멤버는 좌측 메인 페인, 나머지는 우측 2열 그리드에 행 우선으로 배치됩니다.
   우측 인원이 홀수면 마지막 행은 1칸이 전체 폭을 씁니다.
+- 세션은 첫 창을 띄운 채 열립니다. 창 이동은 `prefix` + 창 번호, 또는 `prefix n`/`prefix p` 입니다.
+  `team-send` 는 창과 무관하게 이름으로 보내고, `team-status` 는 멤버마다 창 이름을 함께 표시합니다.
+
+```
+[기획]
+제임스   | 제임스   | 제임스 진행         | claude | claude-opus-5-5 | high  | james
+블룸     | 블룸     | 블룸 교육리서치     | codex  | gpt-6.1-sol     | xhigh | bloom
+
+[개발]
+네이선   | 네이선   | 네이선 Architect    | claude | claude-opus-5-5 | xhigh | nathan
+```
 - 역할 파일은 `roles/<역할파일>.md`. 없으면 경고 후 역할 없이 기동합니다.
 - 형식 오류·중복 이름/라벨·잘못된 엔진(claude/codex)·effort(low~max) 는 tmux 세션을 만들기 전에 중단됩니다.
 - `setup-team.sh` 는 사용한 설정 파일 경로를 tmux 세션 옵션 `@team_members_file` 에 기록하고,

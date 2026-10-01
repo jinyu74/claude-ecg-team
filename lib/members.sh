@@ -3,7 +3,10 @@
 #
 # load_members <file>
 #   성공 시 아래 배열을 채운다 (인덱스 = tmux 페인 인덱스).
-#   M_NAME M_ROLE M_LABEL M_ENGINE M_MODEL M_EFFORT M_ALIASES, M_COUNT
+#   M_NAME M_ROLE M_LABEL M_ENGINE M_MODEL M_EFFORT M_ALIASES M_WINDOW, M_COUNT
+#   W_NAME (창 이름, 등장 순서), W_COUNT
+#
+# '[창이름]' 줄은 이후 멤버를 그 tmux 창에 배치한다. 첫 구획 이전 멤버는 창 'team'.
 #   실패 시 stderr 에 사유를 출력하고 1 반환.
 
 _trim() {
@@ -14,8 +17,9 @@ _trim() {
 }
 
 load_members() {
-    local file="$1" line lineno=0 name role label engine model effort aliases extra i
-    M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_COUNT=0
+    local file="$1" line lineno=0 name role label engine model effort aliases extra i window="team" w
+    M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_WINDOW=(); M_COUNT=0
+    W_NAME=(); W_COUNT=0
 
     [ -f "$file" ] || { echo "멤버 설정 파일 없음: $file" >&2; return 1; }
 
@@ -23,6 +27,19 @@ load_members() {
         lineno=$((lineno + 1))
         line="$(_trim "$line")"
         case "$line" in ''|'#'*) continue ;; esac
+
+        # 창 구획: [창이름]
+        case "$line" in
+            '['*']')
+                window="$(_trim "${line#[}")"; window="$(_trim "${window%]}")"
+                [ -n "$window" ] || { echo "$file:$lineno: 빈 창 이름" >&2; return 1; }
+                w=0
+                while [ $w -lt $W_COUNT ]; do
+                    [ "${W_NAME[$w]}" = "$window" ] && { echo "$file:$lineno: 중복 창 '$window'" >&2; return 1; }
+                    w=$((w + 1))
+                done
+                continue ;;
+        esac
 
         IFS='|' read -r name role label engine model effort aliases extra <<EOF
 $line
@@ -50,9 +67,13 @@ EOF
             i=$((i + 1))
         done
 
-        M_NAME[$M_COUNT]="$name"; M_ROLE[$M_COUNT]="${role:-$name}"; M_LABEL[$M_COUNT]="$label"; M_ENGINE[$M_COUNT]="$engine"
+        M_NAME[$M_COUNT]="$name"; M_ROLE[$M_COUNT]="${role:-$name}"; M_LABEL[$M_COUNT]="$label"; M_ENGINE[$M_COUNT]="$engine"; M_WINDOW[$M_COUNT]="$window"
         M_MODEL[$M_COUNT]="$model"; M_EFFORT[$M_COUNT]="$effort"; M_ALIASES[$M_COUNT]="$aliases"
         M_COUNT=$((M_COUNT + 1))
+        # 멤버가 있는 창만 등록 (등장 순서 유지)
+        if [ $W_COUNT -eq 0 ] || [ "${W_NAME[$((W_COUNT - 1))]}" != "$window" ]; then
+            W_NAME[$W_COUNT]="$window"; W_COUNT=$((W_COUNT + 1))
+        fi
     done < "$file"
 
     [ "$M_COUNT" -gt 0 ] || { echo "$file: 멤버가 없습니다" >&2; return 1; }
