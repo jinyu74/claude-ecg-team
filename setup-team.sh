@@ -51,7 +51,7 @@ wait_for_pane() {
 
 # ── 유틸: Claude 실행 + 다이얼로그 자동 처리 ────────────────
 start_claude_in_pane() {
-    local pane="$1" model="${2:-claude-sonnet-4-6}" role_file="${3:-}"
+    local pane="$1" model="${2:-claude-sonnet-5-5}" role_file="${3:-}" effort="${4:-high}"
     local claude_bin; claude_bin="$(command -v claude)"
 
     tmux send-keys -t "$pane" C-c 2>/dev/null; sleep 0.3
@@ -76,7 +76,7 @@ start_claude_in_pane() {
 
     # team-send 헬퍼를 PATH 에 노출 (페인 간 메시지 전송용)
     tmux send-keys -t "$pane" \
-        "cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE && $claude_bin --model '$model' $role_flag --dangerously-skip-permissions" Enter
+        "cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE && $claude_bin --model '$model' --effort '$effort' $role_flag --dangerously-skip-permissions" Enter
 
     # 다이얼로그 1: trust folder → Enter
     wait_for_pane "$pane" "trust this folder" 20 && {
@@ -304,22 +304,25 @@ fi
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
 echo -e "\n${YELLOW}[3/4] Claude 실행 중... (파인당 최대 1분)${NC}"
 
-# MEMBER_NAMES/MODELS 순서는 PANE_IDS 와 동일한 row-major 시각 인덱스를 따른다.
+# MEMBER_NAMES/MODELS/EFFORTS 순서는 PANE_IDS 와 동일한 row-major 시각 인덱스를 따른다.
 #   0=제임스 / 1=네이선 / 2=수진 / 3=마크 / 4=정민 / 5=수영 / 6=카맥
-# 모델 배정 원칙 (사용 패턴 측정 기반, 2026-05-20 갱신):
-#   - Opus 4.8: 의사결정·아키텍처·구현 품질·머지 게이트 (영향 大)
-#   - Sonnet 4.6 (1M): 고빈도 반복 작업 + 큰 컨텍스트 필요 (예: 측정·프로파일링)
-#   - Haiku 4.5: 단순 조회·비교·저활동 멤버 (Sonnet 의 90% 성능, 약 1/3 비용)
+# 모델 배정 원칙 (2026-10-01 갱신 — Opus 4.8 / Sonnet 4.6 → 5.5 세대):
+#   - Opus 5.5 ($4/$20): 의사결정·아키텍처·구현 품질·머지 게이트 (영향 大)
+#   - Sonnet 5.5 (1M, $2/$10): 조사·측정 등 고빈도 반복 작업 + 큰 컨텍스트
+#   - Fable 5.1 ($10/$50): 기본 배정 안 함. 응답이 길어 페인 간 협업 병목 — 대규모 설계 시 세션 단위 /model 전환
+#   - Haiku 4.5: 미사용 (200K 컨텍스트, Sonnet 5.5 대비 절감 폭 작음)
+# effort: 품질 게이트·설계·구현은 xhigh, 오케스트레이션은 high, 조사·측정·UI 는 medium.
 MEMBER_NAMES=("제임스" "네이선" "수진" "마크저커버그" "정민" "수영" "카맥")
 MEMBER_MODELS=(
-    "claude-opus-4-8"        # 제임스 CTO — 전략 결정·릴리스 사인오프·모니터링
-    "claude-opus-4-8"        # 네이선 Architect — 아키텍처 결정·ADR
-    "claude-sonnet-4-6[1m]"  # 수진 Researcher — 저활동 (PR 0건). 단순 문서 조회·비교에 충분
-    "claude-opus-4-8"        # 마크 Developer — 구현 품질 머지 게이트의 입구. 고빈도 코드 작성
-    "claude-opus-4-8"        # 정민 QA·Reviewer — 머지 게이트 (CRITICAL 누락 비용 ↑)
-    "claude-sonnet-4-6[1m]"  # 수영 UI/UX — 현 백엔드 프로젝트 한정 (UI 작업 최소). 프런트 프로젝트면 Sonnet 으로 복귀
-    "claude-sonnet-4-6[1m]"  # 카맥 Performance — 측정 146회 (최다). 1M 컨텍스트로 auto-compact 완화
+    "claude-opus-5-5"        # 제임스 CTO — 전략 결정·릴리스 사인오프·모니터링
+    "claude-opus-5-5"        # 네이선 Architect — 아키텍처 결정·ADR
+    "claude-sonnet-5-5[1m]"  # 수진 Researcher — 문서 조회·비교에 충분
+    "claude-opus-5-5"        # 마크 Developer — 구현 품질 머지 게이트의 입구. 고빈도 코드 작성
+    "claude-opus-5-5"        # 정민 QA·Reviewer — 머지 게이트 (CRITICAL 누락 비용 ↑)
+    "claude-sonnet-5-5[1m]"  # 수영 UI/UX — 현 백엔드 프로젝트 한정 (UI 작업 최소). 프런트 프로젝트면 claude-opus-5-5 로 상향
+    "claude-sonnet-5-5[1m]"  # 카맥 Performance — 측정 반복 최다. 1M 컨텍스트로 auto-compact 완화
 )
+MEMBER_EFFORTS=("high" "xhigh" "medium" "xhigh" "xhigh" "medium" "medium")
 
 for i in 0 1 2 3 4 5 6; do
     name="${MEMBER_NAMES[$i]}"
@@ -330,7 +333,7 @@ for i in 0 1 2 3 4 5 6; do
         role_file=""
     fi
     echo -n "  Pane $i ($name): "
-    start_claude_in_pane "$pane_id" "${MEMBER_MODELS[$i]}" "$role_file"
+    start_claude_in_pane "$pane_id" "${MEMBER_MODELS[$i]}" "$role_file" "${MEMBER_EFFORTS[$i]}"
 
     tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "bypass permissions" \
         && echo -e "${GREEN}✅ 준비 완료${NC}" \
