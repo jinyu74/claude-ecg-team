@@ -8,6 +8,7 @@ set -euo pipefail
 #   → 환경변수 TEAM_MEMBERS_FILE → 저장소 기본 members.conf
 TEAM_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$TEAM_HOME/lib/members.sh"
+. "$TEAM_HOME/lib/codex.sh"
 
 name_for() {
     if [ -n "${1:-}" ] && [ "$1" -lt "$M_COUNT" ] 2>/dev/null; then
@@ -200,3 +201,15 @@ done
 [ "$_DELIVERED" -eq 0 ] && echo "⚠️ ${SENDER} → ${RECIPIENT_NAME} delivery 미확인 — 수동 확인 권장" >&2
 
 echo "✅ ${SENDER} → ${RECIPIENT_NAME} (pane ${IDX}, ${PAYLOAD_BYTES}B)"
+
+# ── Codex 수신자: 5시간 사용 한도 확인 (전송은 막지 않고 발신자에게 알림) ──
+if [ "${M_ENGINE[$IDX]}" = "codex" ]; then
+    _U="$(codex_usage "$(codex_rollout_for_pane "$TARGET")")"
+    [ -n "$_U" ] || _U="$(codex_usage "$(codex_latest_rollout)")"
+    IFS='|' read -r _CTX _P _PR _W _WR <<EOF
+$_U
+EOF
+    if [ -n "${_P:-}" ] && [ "$_P" -lt 30 ]; then
+        echo "$(codex_limit_marker "$_P") Codex 5시간 한도 ${_P}% 남음 (리셋 $(codex_fmt_time "$_PR")) — 큰 작업이면 사용자에게 보고 후 진행(리셋 대기 / Claude 쪽 재배정 / effort 하향)." >&2
+    fi
+fi

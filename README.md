@@ -125,6 +125,7 @@ echo "베이스라인 측정 부탁" | team-send perf
 # 모든 페인 상태·컨텍스트 사용률 확인
 team-status --tail 2
 team-status --watch 10        # 10초마다 갱신
+team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 ```
 
 `setup-team.sh` 가 각 페인의 PATH 에 `bin/` 을 추가하므로 페인 내부에서는 `team-send`,
@@ -176,7 +177,11 @@ team-status --watch 10        # 10초마다 갱신
   샌드박스가 꺼져 있어야 Codex 멤버가 `team-send`(tmux)를 쓸 수 있습니다.
 - 처음 쓰는 폴더의 신뢰 대화상자는 자동으로 수락합니다. `~/.codex/hooks.json` 의 훅 검토 대화상자는 **신뢰하지 않고 건너뜁니다**
   (해당 실행에서 훅 미적용). 훅을 쓰려면 `codex` 를 한 번 직접 실행해 신뢰를 결정하세요.
-- `team-status` 의 컨텍스트 사용률(ctx)은 Claude 화면만 읽을 수 있어 Codex 멤버는 `-` 로 표시됩니다.
+- `team-status` 는 Codex 멤버의 컨텍스트를 **남은 비율(left)** 로, 계정 사용 한도(5시간·주간)를 별도 줄로 표시합니다.
+  값은 Codex 세션 기록(`~/.codex/sessions/**/rollout-*.jsonl`)에서 읽어 `/status` 와 같으며, 페인에 아무것도 입력하지 않습니다.
+  `team-status --limits` 는 한도만 한 줄로 출력합니다. `jq`·`lsof` 가 필요합니다.
+- `team-send` 는 Codex 수신자의 5시간 한도가 30% 미만이면 발신자에게 경고합니다(전송은 진행).
+  운영 규칙은 `roles/_team-workflow.md` §0.5.1 을 따릅니다.
 
 ### 멤버 추가 절차
 

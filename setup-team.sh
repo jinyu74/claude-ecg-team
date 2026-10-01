@@ -368,10 +368,12 @@ tmux select-window -t "${WINDOW_IDS[0]}"
 
 # 페인 태그 — @role: 보더 표시용 라벨 (Claude OSC 2 영향 없음)
 #             @member: members.conf 행 번호. team-send·team-status 는 tmux 인덱스가 아니라 이 태그로 페인을 찾는다.
+#             @engine: claude | codex. team-status 가 엔진별로 컨텍스트·사용 한도를 읽는 데 쓴다.
 i=0
 while [ $i -lt $M_COUNT ]; do
     tmux set-option -p -t "${PANE_IDS[$i]}" @role "${M_LABEL[$i]}"
     tmux set-option -p -t "${PANE_IDS[$i]}" @member "$i"
+    tmux set-option -p -t "${PANE_IDS[$i]}" @engine "${M_ENGINE[$i]}"
     i=$((i + 1))
 done
 

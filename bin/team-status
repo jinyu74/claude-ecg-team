@@ -3,17 +3,38 @@
 
 set -euo pipefail
 
+TEAM_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$TEAM_HOME/lib/codex.sh"
+
+# codex_limits_line [rollout 파일] — Codex 계정 사용 한도 한 줄 (5시간 · 주간)
+codex_limits_line() {
+    local f="${1:-}" u ctx p pr wk wr
+    [ -n "$f" ] || f="$(codex_latest_rollout)"
+    u="$(codex_usage "$f")"
+    IFS='|' read -r ctx p pr wk wr <<EOF
+$u
+EOF
+    if [ -z "$p" ]; then
+        echo "  Codex 사용 한도: 정보 없음 (Codex 세션 기록 없음 또는 jq 미설치)"
+        return
+    fi
+    printf "  %s Codex 5시간 한도 %s%% 남음 (리셋 %s) · 주간 %s%% 남음 (리셋 %s)\n" \
+        "$(codex_limit_marker "$p")" "$p" "$(codex_fmt_time "$pr")" "$wk" "$(codex_fmt_time "$wr" '%m/%d %H:%M')"
+}
+
 # ── 옵션 파싱 ────────────────────────────────────────────────
 SESSION_OVERRIDE=""
 TAIL_LINES=2
 WATCH_INTERVAL=0
 SHOW_HELP=0
+LIMITS_ONLY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --session) SESSION_OVERRIDE="$2"; shift 2 ;;
         --tail) TAIL_LINES="$2"; shift 2 ;;
         --watch) WATCH_INTERVAL="${2:-10}"; shift 2 ;;
+        --limits) LIMITS_ONLY=1; shift ;;
         -h|--help) SHOW_HELP=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -26,10 +47,17 @@ Usage:
   team-status --tail 5         # 페인별 마지막 5줄 미리보기
   team-status --watch 10       # 10초마다 갱신
   team-status --session <name> # 세션 지정
+  team-status --limits         # Codex 사용 한도(5시간·주간)만 한 줄 출력
 
 출력 컬럼:
-  pane | 역할 | 상태 | 활동 | cmd | 마지막 N줄
+  pane | 창 | 역할 | 상태 | ctx | cmd | 마지막 N줄
+  ctx: Claude 는 사용률(used), Codex 는 남은 비율(left). Codex 값은 세션 기록에서 읽는다(/status 와 동일).
 EOF
+    exit 0
+fi
+
+if [ "$LIMITS_ONLY" -eq 1 ]; then
+    codex_limits_line
     exit 0
 fi
 
@@ -98,24 +126,39 @@ render_once() {
 
     # 페인별 한 줄 (상태 + 컨텍스트) + 미리보기
     # 페인은 setup-team.sh 의 @member 태그(멤버 번호) 순으로 표시 — tmux base-index·창 분리와 무관
-    tmux list-panes -s -t "$SESSION" -F '#{@member}|#{pane_id}|#{window_name}|#{@role}|#{pane_current_command}|#{pane_dead}|#{pane_pid}' | \
-    sort -t '|' -k1,1n | \
-    while IFS='|' read -r idx pane_id win role cmd dead pid; do
+    local codex_rollout=""
+    while IFS='|' read -r idx pane_id win role engine cmd dead pid; do
         local state state_short
         if [ "$dead" = "1" ]; then
             state="💀 종료됨" ; state_short="DEAD"
         else
             case "$cmd" in
                 bash|zsh|sh|fish|tcsh|csh|ksh|dash)
-                    state="⚠️  비활성(셸: $cmd, Claude 종료됨)" ; state_short="INACT"
+                    state="⚠️  비활성(셸: $cmd, ${engine:-claude} 종료됨)" ; state_short="INACT"
                     ;;
                 *) state="✅ 활성($cmd)" ; state_short="OK" ;;
             esac
         fi
 
-        local ctx_col=""
+        local ctx_col="" rollout u ctx
         if [ "$state_short" = "OK" ]; then
-            ctx_col=$(extract_context "$pane_id")
+            if [ "$engine" = "codex" ]; then
+                rollout="$(codex_rollout_for_pane "$pane_id")"
+                [ -n "$rollout" ] && codex_rollout="$rollout"
+                u="$(codex_usage "$rollout")"; ctx="${u%%|*}"
+                if [ -n "$ctx" ]; then
+                    local marker="  "
+                    if   [ "$ctx" -le 10 ]; then marker="🚨"
+                    elif [ "$ctx" -le 20 ]; then marker="⚠️ "
+                    elif [ "$ctx" -le 40 ]; then marker="ℹ️ "
+                    fi
+                    ctx_col="$(printf "%s %s%% left  " "$marker" "$ctx")"
+                else
+                    ctx_col="  -          "
+                fi
+            else
+                ctx_col=$(extract_context "$pane_id")
+            fi
         fi
 
         printf "  [%s] p%s %-8s %-26s ctx=[%s] %s (pid %s)\n" \
@@ -131,10 +174,20 @@ render_once() {
                 | head -c 4000
             echo ""
         fi
-    done
+    done <<EOF
+$(tmux list-panes -s -t "$SESSION" -F '#{@member}|#{pane_id}|#{window_name}|#{@role}|#{@engine}|#{pane_current_command}|#{pane_dead}|#{pane_pid}' | sort -t '|' -k1,1n)
+EOF
+
+    # Codex 사용 한도 — 계정 단위. 세션 안 Codex 멤버의 기록을 우선 사용
+    if tmux list-panes -s -t "$SESSION" -F '#{@engine}' | grep -qx codex; then
+        echo "─── Codex 사용 한도 (계정) ───"
+        codex_limits_line "$codex_rollout"
+        echo "  5시간 한도 30% 미만 ⚠️ · 10% 미만 🚨 — 큰 작업 배정 전 확인. 부족하면 사용자에게 보고(리셋 대기 / Claude 쪽 재배정 / effort 하향)."
+    fi
 
     echo "─── 컨텍스트 임계 안내 ───"
-    echo "  ℹ️ 60%+   ⚠️ 80%+   🚨 90%+ 또는 compact 20% 미만   🆘 compact 5% 미만"
+    echo "  Claude(used): ℹ️ 60%+   ⚠️ 80%+   🚨 90%+ 또는 compact 20% 미만   🆘 compact 5% 미만"
+    echo "  Codex(left):  ℹ️ 40% 이하   ⚠️ 20% 이하   🚨 10% 이하"
     echo "  임계 도달 시: 해당 멤버에게 'docs/checkpoints/<role>.md 에 현 상태 요약 저장 후 /compact' 지시."
 }
 
