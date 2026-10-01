@@ -11,7 +11,8 @@ Jira Sub-task · 브랜치 전략 · PR 머지 게이트(보안·커버리지·�
 ## 의존성
 
 - `tmux`
-- `claude` CLI (`@anthropic-ai/claude-code`)
+- `claude` CLI (`@anthropic-ai/claude-code`) — `members.conf` 에 claude 엔진 멤버가 있을 때
+- `codex` CLI (`@openai/codex`, 로그인 필요) — `members.conf` 에 codex 엔진 멤버가 있을 때
 - `jq` (선택 — team-send-verify Hook 동작에 필요. 미설치 시 Hook 만 graceful skip)
 - `rsync` (선택 — 스킬 배포에 사용. 미설치 시 `cp -R` fallback)
 
@@ -76,17 +77,20 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 
 ## 페르소나
 
-| 페인 | 이름 | 역할 | 핵심 책임 | 모델 · effort |
+| 멤버 | 이름 | 역할 | 핵심 책임 | 엔진 · 모델 · effort |
 |---|---|---|---|---|
-| 0 | 제임스 | CTO · 오케스트레이터 | 요청 5종 분류 → 위임, 의사결정·트레이드오프, 릴리스(main 머지) 사인오프. 실작업은 직접 하지 않음 | Opus 5.5 · high |
-| 1 | 네이선 | 시스템 아키텍트 | 모듈 경계·데이터 흐름 설계, ADR, 마크용 구현 가이드, `interface-change` PR 정합성 리뷰, 현행 아키텍처 역공학 | Opus 5.5 · xhigh |
-| 2 | 수진 | 리서처 | 라이브러리·기술 옵션 비교표, 출처(URL·버전) 기반 권장안, 코드 인벤토리·의존성 감사 | Sonnet 5.5 (1M) · medium |
-| 3 | 마크(저커버그) | 시니어 개발자 | TDD(RED→GREEN→IMPROVE) 구현, 단위·통합 테스트 작성, 작은 커밋·PR, CI 그린 유지 | Opus 5.5 · xhigh |
-| 4 | 정민 | QA · 코드 리뷰어 | 머지 전 마지막 게이트: 보안(OWASP)·정확성·patch 커버리지 80%, E2E·회귀 테스트, 버그 트리아지 | Opus 5.5 · xhigh |
-| 5 | 수영 | UI/UX 디자이너 | 디자인 토큰, 접근성(WCAG 2.2), 반응형·다크모드·reduced-motion, 비주얼 회귀, UI 인벤토리 | Sonnet 5.5 (1M) · medium |
-| 6 | 카맥 | 성능·신뢰성 엔지니어 | "측정 없이 추측 금지": N≥5 베이스라인, p50/p95/p99, 부하 테스트, SLI/SLO, perf 예산 게이트 | Sonnet 5.5 (1M) · medium |
+| 0 | 제임스 | CTO · 오케스트레이터 | 요청 5종 분류 → 위임, 의사결정·트레이드오프, 릴리스(main 머지) 사인오프. 실작업은 직접 하지 않음 | Claude Opus 5.5 · high |
+| 1 | 네이선 | 시스템 아키텍트 | 모듈 경계·데이터 흐름 설계, ADR, 마크용 구현 가이드, `interface-change` PR 정합성 리뷰, 현행 아키텍처 역공학 | Claude Opus 5.5 · xhigh |
+| 2 | 수진 | 리서처 | 라이브러리·기술 옵션 비교표, 출처(URL·버전) 기반 권장안, 코드 인벤토리·의존성 감사 | Claude Sonnet 5.5 (1M) · medium |
+| 3 | 마크(저커버그) | 시니어 개발자 | TDD(RED→GREEN→IMPROVE) 구현, 단위·통합 테스트 작성, 작은 커밋·PR, CI 그린 유지 | Claude Opus 5.5 · xhigh |
+| 4 | 정민 | QA · 코드 리뷰어 | 머지 전 마지막 게이트: 보안(OWASP)·정확성·patch 커버리지 80%, E2E·회귀 테스트, 버그 트리아지 | **Codex** gpt-6.1-sol · xhigh |
+| 5 | 수영 | UI/UX 디자이너 | 디자인 토큰, 접근성(WCAG 2.2), 반응형·다크모드·reduced-motion, 비주얼 회귀, UI 인벤토리 | Claude Sonnet 5.5 (1M) · medium |
+| 6 | 카맥 | 성능·신뢰성 엔지니어 | "측정 없이 추측 금지": N≥5 베이스라인, p50/p95/p99, 부하 테스트, SLI/SLO, perf 예산 게이트 | **Codex** gpt-6.1-sol · medium |
 
-모델·effort 는 `members.conf` 에서 바꿉니다 (2026-10-01 기준).
+엔진·모델·effort 는 `members.conf` 에서 바꿉니다 (2026-10-01 기준).
+
+- **만드는 쪽은 Claude, 검증하는 쪽은 Codex.** 정민(리뷰 게이트)·카맥(성능 게이트)은 Codex 로 두어
+  다른 모델이 검증하게 합니다. 같은 모델끼리 같은 실수를 놓치는 위험을 줄이기 위함입니다.
 
 - 의사결정·설계·구현·머지 게이트처럼 영향이 큰 역할 → `claude-opus-5-5`
 - 조사·측정처럼 반복이 많고 컨텍스트가 큰 역할 → `claude-sonnet-5-5[1m]`
@@ -134,19 +138,31 @@ team-status --watch 10        # 10초마다 갱신
 모델·effort·역할 주입을 만들고, `team-send` 는 같은 파일로 수신자 이름·별칭을 페인 인덱스로 바꿉니다.
 
 ```
-# 이름 | 역할파일 | 페인 라벨 | 모델 | effort | 별칭(공백 구분)
-제임스 | 제임스       | 제임스 CTO             | claude-opus-5-5 | high  | james cto
-마크   | 마크저커버그 | 마크저커버그 Developer | claude-opus-5-5 | xhigh | mark zuck dev developer
+# 이름 | 역할파일 | 페인 라벨 | 엔진 | 모델 | effort | 별칭(공백 구분)
+제임스 | 제임스       | 제임스 CTO             | claude | claude-opus-5-5 | high  | james cto
+정민   | 정민         | 정민 QA·Reviewer       | codex  | gpt-6.1-sol     | xhigh | jungmin qa reviewer
 ```
 
-- **행 순서 = 페인 인덱스.** 첫 행은 좌측 메인 페인, 나머지는 우측 2열 그리드에 행 우선으로 배치됩니다.
+- **행 순서 = 멤버 번호.** 첫 행은 좌측 메인 페인, 나머지는 우측 2열 그리드에 행 우선으로 배치됩니다.
   우측 인원이 홀수면 마지막 행은 1칸이 전체 폭을 씁니다.
 - 역할 파일은 `roles/<역할파일>.md`. 없으면 경고 후 역할 없이 기동합니다.
-- 형식 오류·중복 이름/라벨·잘못된 effort 는 tmux 세션을 만들기 전에 중단됩니다.
+- 형식 오류·중복 이름/라벨·잘못된 엔진(claude/codex)·effort(low~max) 는 tmux 세션을 만들기 전에 중단됩니다.
 - `setup-team.sh` 는 사용한 설정 파일 경로를 tmux 세션 옵션 `@team_members_file` 에 기록하고,
   `team-send` 는 이를 먼저 읽습니다(없으면 `TEAM_MEMBERS_FILE` → 기본 `members.conf`).
   그래서 `-c` 로 띄운 세션에서도 `team-send` 가 같은 구성을 씁니다.
-- Claude 기동 전에 페인 인덱스 ↔ `@role` 매핑을 자가 검증하고, 불일치 시 세션을 종료합니다.
+- 각 페인에는 멤버 번호 태그 `@member` 가 붙고, `team-send`·`team-status` 는 tmux 인덱스가 아니라 이 태그로
+  페인을 찾습니다. 그래서 `~/.tmux.conf` 의 `base-index`·`pane-base-index` 설정과 무관하게 동작합니다.
+- 멤버 기동 전에 멤버마다 태그 페인이 하나이고 `@role` 라벨이 일치하는지 검증하고, 불일치 시 세션을 종료합니다.
+
+### Codex 엔진
+
+- 역할 지시는 `-c developer_instructions` 로 주입합니다(공통 워크플로 + 역할 파일, ~45KB). 긴 지시를 페인에
+  타이핑하지 않도록 `roles/.merged/<역할파일>.codex.sh` 실행 스크립트를 만들어 호출합니다.
+- 실행 옵션은 Claude 의 `--dangerously-skip-permissions` 에 대응하는 `--dangerously-bypass-approvals-and-sandbox` 입니다.
+  샌드박스가 꺼져 있어야 Codex 멤버가 `team-send`(tmux)를 쓸 수 있습니다.
+- 처음 쓰는 폴더의 신뢰 대화상자는 자동으로 수락합니다. `~/.codex/hooks.json` 의 훅 검토 대화상자는 **신뢰하지 않고 건너뜁니다**
+  (해당 실행에서 훅 미적용). 훅을 쓰려면 `codex` 를 한 번 직접 실행해 신뢰를 결정하세요.
+- `team-status` 의 컨텍스트 사용률(ctx)은 Claude 화면만 읽을 수 있어 Codex 멤버는 `-` 로 표시됩니다.
 
 ### 멤버 추가 절차
 

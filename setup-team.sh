@@ -48,31 +48,28 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
-# ── 유틸: 페인에 패턴이 나타날 때까지 대기 ──────────────────
-wait_for_pane() {
-    local pane="$1" pattern="$2" timeout="${3:-30}" waited=0
-    while [ $waited -lt $timeout ]; do
-        tmux capture-pane -t "$pane" -p 2>/dev/null | grep -q "$pattern" && return 0
-        sleep 1; waited=$((waited + 1))
-    done
-    return 1
+# ── 유틸: 엔진별 준비 완료 화면 패턴 ───────────────────────
+ready_pattern() {
+    case "$1" in
+        codex) echo "for shortcuts" ;;
+        *)     echo "bypass permissions" ;;
+    esac
 }
 
-# ── 유틸: Claude 실행 + 다이얼로그 자동 처리 ────────────────
-start_claude_in_pane() {
-    local pane="$1" model="$2" role_file="${3:-}" effort="$4"
-    local claude_bin; claude_bin="$(command -v claude)"
+# ── 유틸: 멤버 실행 (claude | codex) + 다이얼로그 자동 처리 ──
+start_member_in_pane() {
+    local pane="$1" engine="$2" model="$3" role_file="${4:-}" effort="$5"
 
     tmux send-keys -t "$pane" C-c 2>/dev/null; sleep 0.3
     tmux send-keys -t "$pane" C-u 2>/dev/null; sleep 0.2
 
     # 공통 워크플로(_team-workflow.md) + 역할 파일을 합쳐 단일 파일로 주입.
-    local role_flag=""
+    local merged_file=""
     local common_file="$ROLES_DIR/_team-workflow.md"
+    local merged_dir="$ROLES_DIR/.merged"
+    mkdir -p "$merged_dir"
     if [ -n "$role_file" ] && [ -f "$role_file" ]; then
-        local merged_dir="$ROLES_DIR/.merged"
-        mkdir -p "$merged_dir"
-        local merged_file="$merged_dir/$(basename "$role_file")"
+        merged_file="$merged_dir/$(basename "$role_file")"
         if [ -f "$common_file" ]; then
             cat "$common_file" > "$merged_file"
             printf "\n\n---\n\n" >> "$merged_file"
@@ -80,25 +77,72 @@ start_claude_in_pane() {
         else
             cat "$role_file" > "$merged_file"
         fi
-        role_flag="--append-system-prompt-file \"$merged_file\""
     fi
 
     # team-send 헬퍼를 PATH 에 노출 (페인 간 메시지 전송용)
+    local prefix="cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE"
+
+    if [ "$engine" = "codex" ]; then
+        # Codex 는 --append-system-prompt-file 이 없어 developer_instructions 설정으로 주입한다.
+        # 역할 지시(~45KB)를 send-keys 로 타이핑하지 않도록 실행 스크립트를 만들어 호출한다.
+        # TOML 멀티라인 리터럴 문자열(''') 은 이스케이프가 필요 없지만, 본문에 ''' 가 있으면 깨진다.
+        local tq="'''"
+        local launcher="$merged_dir/$(basename "${role_file:-member-$pane}" .md).codex.sh"
+        local codex_cmd
+        codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
+        if [ -n "$merged_file" ]; then
+            if grep -qF "$tq" "$merged_file"; then
+                echo -e "${RED}❌ $merged_file 에 $tq 가 있어 Codex 에 주입할 수 없습니다${NC}"
+                return 1
+            fi
+            codex_cmd="$codex_cmd -c \"developer_instructions=$tq\$(cat $(printf '%q' "$merged_file"))$tq\""
+        fi
+        printf '#!/bin/bash\n%s\n' "$codex_cmd" > "$launcher"
+        tmux send-keys -t "$pane" "$prefix && bash \"$launcher\"" Enter
+
+        # 다이얼로그: 폴더 신뢰 → Enter (1. Trust and continue)
+        #            훅 검토   → Esc (이번 실행은 신뢰 없이 건너뜀 — 사용자 훅 신뢰는 사용자가 직접 결정)
+        local waited=0 screen
+        while [ $waited -lt 60 ]; do
+            screen="$(tmux capture-pane -t "$pane" -p 2>/dev/null)"
+            case "$screen" in
+                *"for shortcuts"*) return 0 ;;
+                *"Trust this folder"*) tmux send-keys -t "$pane" Enter; sleep 1 ;;
+                *"Hooks need review"*) tmux send-keys -t "$pane" Escape; sleep 1 ;;
+            esac
+            sleep 1; waited=$((waited + 1))
+        done
+        return 1
+    fi
+
+    local role_flag=""
+    [ -n "$merged_file" ] && role_flag="--append-system-prompt-file \"$merged_file\""
     tmux send-keys -t "$pane" \
-        "cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE && $claude_bin --model '$model' --effort '$effort' $role_flag --dangerously-skip-permissions" Enter
+        "$prefix && $(command -v claude) --model '$model' --effort '$effort' $role_flag --dangerously-skip-permissions" Enter
 
-    # 다이얼로그 1: trust folder → Enter
-    wait_for_pane "$pane" "trust this folder" 20 && {
-        tmux send-keys -t "$pane" Enter; sleep 1
-    }
-
-    # 다이얼로그 2: terms of service → Down + Enter
-    wait_for_pane "$pane" "I accept" 20 && {
-        tmux send-keys -t "$pane" Down; sleep 0.5
-        tmux send-keys -t "$pane" Enter; sleep 1
-    }
-
-    wait_for_pane "$pane" "bypass permissions" 30
+    # 다이얼로그 자동 처리 — 선택 항목을 확인한 뒤 고른다.
+    #   폴더 신뢰: 기본 선택이 "No, exit" 이므로 Enter 만 보내면 Claude 가 종료된다.
+    #             커서(❯)가 "Yes, I trust this folder" 에 올 때까지 Down 후 Enter.
+    #   약관 동의: Down + Enter (구버전 화면)
+    local waited=0 screen
+    while [ $waited -lt 60 ]; do
+        screen="$(tmux capture-pane -t "$pane" -p 2>/dev/null)"
+        case "$screen" in
+            *"Yes, I trust this folder"*)
+                if printf '%s\n' "$screen" | grep -q "❯.*Yes, I trust this folder"; then
+                    tmux send-keys -t "$pane" Enter
+                else
+                    tmux send-keys -t "$pane" Down
+                fi
+                sleep 1 ;;
+            *"I accept"*)
+                tmux send-keys -t "$pane" Down; sleep 0.5
+                tmux send-keys -t "$pane" Enter; sleep 1 ;;
+            *"bypass permissions"*) return 0 ;;
+        esac
+        sleep 1; waited=$((waited + 1))
+    done
+    return 1
 }
 
 # ── [0/4] 사전 요구사항 확인 ────────────────────────────────
@@ -106,7 +150,11 @@ echo -e "${YELLOW}[0/4] 사전 요구사항 확인...${NC}"
 
 MISSING=()
 command -v tmux   &>/dev/null || MISSING+=("tmux (sudo apt install -y tmux)")
-command -v claude &>/dev/null || MISSING+=("claude (npm install -g @anthropic-ai/claude-code)")
+# 엔진 CLI 는 members.conf 에서 실제로 쓰는 것만 요구한다.
+case " ${M_ENGINE[*]} " in *" claude "*)
+    command -v claude &>/dev/null || MISSING+=("claude (npm install -g @anthropic-ai/claude-code)") ;; esac
+case " ${M_ENGINE[*]} " in *" codex "*)
+    command -v codex &>/dev/null || MISSING+=("codex (npm install -g @openai/codex)") ;; esac
 # jq — team-send-verify hook 가 stdin JSON 파싱에 사용. 미설치 시 hook 가 graceful skip 하지만 검증 자동화가 동작 안 함.
 JQ_OK=1
 if ! command -v jq &>/dev/null; then
@@ -125,7 +173,8 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 echo "  ✅ tmux $(tmux -V | awk '{print $2}')"
-echo "  ✅ claude $(claude --version 2>/dev/null | head -1)"
+command -v claude &>/dev/null && echo "  ✅ claude $(claude --version 2>/dev/null | head -1)"
+command -v codex  &>/dev/null && echo "  ✅ $(codex --version 2>/dev/null | head -1)"
 [ "$JQ_OK" -eq 1 ] && echo "  ✅ jq $(jq --version 2>/dev/null)"
 echo "  📂 작업 디렉터리: $WORKDIR"
 echo "  🏷️  세션 이름: $SESSION"
@@ -257,7 +306,8 @@ tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{@role} "
 tmux set-option -t "$SESSION" allow-rename off
 
-PANE_IDS=("$(tmux display-message -p -t "$SESSION:0.0" '#{pane_id}')")
+# 첫 페인 — tmux base-index 설정과 무관하게 세션의 활성 페인으로 잡는다.
+PANE_IDS=("$(tmux display-message -p -t "$SESSION" '#{pane_id}')")
 
 if [ "$ROWS" -gt 0 ]; then
     # Phase 1: 좌측 메인 + 우측 영역
@@ -279,31 +329,34 @@ if [ "$ROWS" -gt 0 ]; then
     done
 fi
 
-# 페인 역할명 설정 — per-pane user option @role (Claude OSC 2 영향 없음)
+# 페인 태그 — @role: 보더 표시용 라벨 (Claude OSC 2 영향 없음)
+#             @member: members.conf 행 번호. team-send·team-status 는 tmux 인덱스가 아니라 이 태그로 페인을 찾는다.
 i=0
 while [ $i -lt $M_COUNT ]; do
     tmux set-option -p -t "${PANE_IDS[$i]}" @role "${M_LABEL[$i]}"
+    tmux set-option -p -t "${PANE_IDS[$i]}" @member "$i"
     i=$((i + 1))
 done
 
 echo "  ✅ 레이아웃 구성 완료 (${M_COUNT} panes, 메인 1 + 우측 ${ROWS}행 × 2열)"
 
 # ── 페인 매핑 자가 검증 ────────────────────────────────────
-# team-send 는 members.conf 의 행 순서를 페인 인덱스로 사용한다.
-# tmux 동작 차이·레이아웃 변경으로 어긋나면 메시지가 다른 멤버에게 오배달되므로
-# Claude 기동 전에 인덱스↔역할 일치를 검증한다.
+# team-send 는 @member 태그로 수신 페인을 찾는다. 태그가 어긋나면 메시지가 다른 멤버에게
+# 오배달되므로 기동 전에 멤버마다 태그 페인이 정확히 하나이고 라벨이 일치하는지 검증한다.
 MAPPING_OK=1
 i=0
 while [ $i -lt $M_COUNT ]; do
-    actual="$(tmux display-message -p -t "$SESSION:0.$i" '#{@role}' 2>/dev/null)"
-    if [ "$actual" != "${M_LABEL[$i]}" ]; then
-        echo -e "  ${RED}❌ pane $i: 기대 '${M_LABEL[$i]}' ≠ 실제 '$actual'${NC}"
+    found="$(tmux list-panes -s -t "$SESSION" -F '#{@member}' | grep -cx "$i")"
+    pid="$(member_pane_id "$SESSION" "$i")"
+    actual="$(tmux display-message -p -t "${pid:-none}" '#{@role}' 2>/dev/null)"
+    if [ "$found" -ne 1 ] || [ "$actual" != "${M_LABEL[$i]}" ]; then
+        echo -e "  ${RED}❌ member $i: 태그 페인 ${found}개, 기대 '${M_LABEL[$i]}' ≠ 실제 '$actual'${NC}"
         MAPPING_OK=0
     fi
     i=$((i + 1))
 done
 if [ "$MAPPING_OK" -eq 1 ]; then
-    echo -e "  ${GREEN}✅ 페인 인덱스 ↔ 역할 매핑 일치 (team-send 기준)${NC}"
+    echo -e "  ${GREEN}✅ 멤버 ↔ 페인 태그 매핑 일치 (team-send 기준)${NC}"
 else
     echo -e "  ${RED}⚠️  매핑 불일치 — team-send 가 잘못된 페인으로 송신됩니다. 세션을 종료하고 레이아웃을 수정하세요.${NC}"
     tmux kill-session -t "$SESSION"
@@ -311,9 +364,9 @@ else
 fi
 
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
-echo -e "\n${YELLOW}[3/4] Claude 실행 중... (페인당 최대 1분)${NC}"
+echo -e "\n${YELLOW}[3/4] 멤버 실행 중 (Claude / Codex)... (페인당 최대 1분)${NC}"
 
-# 멤버별 모델·effort·역할 파일은 members.conf 가 단일 소스.
+# 멤버별 엔진·모델·effort·역할 파일은 members.conf 가 단일 소스.
 i=0
 while [ $i -lt $M_COUNT ]; do
     pane_id="${PANE_IDS[$i]}"
@@ -322,10 +375,10 @@ while [ $i -lt $M_COUNT ]; do
         echo -e "  ${YELLOW}⚠️  역할 파일 없음: $role_file (역할 미주입)${NC}"
         role_file=""
     fi
-    echo -n "  Pane $i (${M_NAME[$i]} · ${M_MODEL[$i]} · ${M_EFFORT[$i]}): "
-    start_claude_in_pane "$pane_id" "${M_MODEL[$i]}" "$role_file" "${M_EFFORT[$i]}"
+    echo -n "  Pane $i (${M_NAME[$i]} · ${M_ENGINE[$i]} ${M_MODEL[$i]} · ${M_EFFORT[$i]}): "
+    start_member_in_pane "$pane_id" "${M_ENGINE[$i]}" "${M_MODEL[$i]}" "$role_file" "${M_EFFORT[$i]}" || true
 
-    tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "bypass permissions" \
+    tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "$(ready_pattern "${M_ENGINE[$i]}")" \
         && echo -e "${GREEN}✅ 준비 완료${NC}" \
         || echo -e "${RED}⚠️  타임아웃 — 수동 확인 필요${NC}"
     i=$((i + 1))

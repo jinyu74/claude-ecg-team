@@ -3,7 +3,7 @@
 #
 # load_members <file>
 #   성공 시 아래 배열을 채운다 (인덱스 = tmux 페인 인덱스).
-#   M_NAME M_ROLE M_LABEL M_MODEL M_EFFORT M_ALIASES, M_COUNT
+#   M_NAME M_ROLE M_LABEL M_ENGINE M_MODEL M_EFFORT M_ALIASES, M_COUNT
 #   실패 시 stderr 에 사유를 출력하고 1 반환.
 
 _trim() {
@@ -14,8 +14,8 @@ _trim() {
 }
 
 load_members() {
-    local file="$1" line lineno=0 name role label model effort aliases extra i
-    M_NAME=(); M_ROLE=(); M_LABEL=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_COUNT=0
+    local file="$1" line lineno=0 name role label engine model effort aliases extra i
+    M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_COUNT=0
 
     [ -f "$file" ] || { echo "멤버 설정 파일 없음: $file" >&2; return 1; }
 
@@ -24,16 +24,21 @@ load_members() {
         line="$(_trim "$line")"
         case "$line" in ''|'#'*) continue ;; esac
 
-        IFS='|' read -r name role label model effort aliases extra <<EOF
+        IFS='|' read -r name role label engine model effort aliases extra <<EOF
 $line
 EOF
-        name="$(_trim "$name")"; role="$(_trim "$role")"; label="$(_trim "$label")"
+        name="$(_trim "$name")"; role="$(_trim "$role")"; label="$(_trim "$label")"; engine="$(_trim "$engine")"
         model="$(_trim "$model")"; effort="$(_trim "$effort")"; aliases="$(_trim "$aliases")"
 
-        if [ -n "$extra" ] || [ -z "$name" ] || [ -z "$label" ] || [ -z "$model" ] || [ -z "$effort" ]; then
-            echo "$file:$lineno: 형식 오류 — '이름 | 역할파일 | 페인 라벨 | 모델 | effort | 별칭'" >&2
+        if [ -n "$extra" ] || [ -z "$name" ] || [ -z "$label" ] || [ -z "$engine" ] || [ -z "$model" ] || [ -z "$effort" ]; then
+            echo "$file:$lineno: 형식 오류 — '이름 | 역할파일 | 페인 라벨 | 엔진 | 모델 | effort | 별칭'" >&2
             return 1
         fi
+        case "$engine" in
+            claude|codex) ;;
+            *) echo "$file:$lineno: 잘못된 엔진 '$engine' (claude/codex)" >&2; return 1 ;;
+        esac
+        # 두 엔진 모두 low~max 를 받는다 (Codex 는 minimal 도 있으나 gpt-6.1-sol 이 거부).
         case "$effort" in
             low|medium|high|xhigh|max) ;;
             *) echo "$file:$lineno: 잘못된 effort '$effort' (low/medium/high/xhigh/max)" >&2; return 1 ;;
@@ -45,7 +50,7 @@ EOF
             i=$((i + 1))
         done
 
-        M_NAME[$M_COUNT]="$name"; M_ROLE[$M_COUNT]="${role:-$name}"; M_LABEL[$M_COUNT]="$label"
+        M_NAME[$M_COUNT]="$name"; M_ROLE[$M_COUNT]="${role:-$name}"; M_LABEL[$M_COUNT]="$label"; M_ENGINE[$M_COUNT]="$engine"
         M_MODEL[$M_COUNT]="$model"; M_EFFORT[$M_COUNT]="$effort"; M_ALIASES[$M_COUNT]="$aliases"
         M_COUNT=$((M_COUNT + 1))
     done < "$file"
@@ -63,4 +68,11 @@ member_index() {
         done
         i=$((i + 1))
     done
+}
+
+# member_pane_id <session> <멤버 인덱스> — 해당 멤버 페인의 pane_id(%N) 출력
+# tmux base-index·pane-base-index·창 분리와 무관하도록 인덱스가 아닌 페인 태그(@member)로 찾는다.
+member_pane_id() {
+    tmux list-panes -s -t "$1" -F '#{@member} #{pane_id}' 2>/dev/null \
+        | awk -v i="$2" 'NF == 2 && $1 == i { print $2; exit }'
 }

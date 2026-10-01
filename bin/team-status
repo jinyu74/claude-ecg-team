@@ -62,9 +62,9 @@ fi
 ##   90%+ ctx_used 또는 until auto-compact 20% 미만 → 🚨
 ##   until auto-compact 5% 미만 → 🆘 (긴급)
 extract_context() {
-    local idx="$1"
+    local pane_id="$1"
     local snap
-    snap=$(tmux capture-pane -t "$SESSION:0.$idx" -p 2>/dev/null | tail -15)
+    snap=$(tmux capture-pane -t "$pane_id" -p 2>/dev/null | tail -15)
 
     local ctx_used ctx_until
     ctx_used=$(echo "$snap" | grep -oE '[0-9]+% context used' | tail -1 | grep -oE '^[0-9]+')
@@ -97,8 +97,10 @@ render_once() {
     echo
 
     # 페인별 한 줄 (상태 + 컨텍스트) + 미리보기
-    tmux list-panes -t "$SESSION:0" -F '#{pane_index}|#{@role}|#{pane_current_command}|#{pane_dead}|#{pane_pid}' | \
-    while IFS='|' read -r idx role cmd dead pid; do
+    # 페인은 setup-team.sh 의 @member 태그(멤버 번호) 순으로 표시 — tmux base-index·창 분리와 무관
+    tmux list-panes -s -t "$SESSION" -F '#{@member}|#{pane_id}|#{@role}|#{pane_current_command}|#{pane_dead}|#{pane_pid}' | \
+    sort -t '|' -k1,1n | \
+    while IFS='|' read -r idx pane_id role cmd dead pid; do
         local state state_short
         if [ "$dead" = "1" ]; then
             state="💀 종료됨" ; state_short="DEAD"
@@ -113,7 +115,7 @@ render_once() {
 
         local ctx_col=""
         if [ "$state_short" = "OK" ]; then
-            ctx_col=$(extract_context "$idx")
+            ctx_col=$(extract_context "$pane_id")
         fi
 
         printf "  [%s] p%s %-26s ctx=[%s] %s (pid %s)\n" \
@@ -121,7 +123,7 @@ render_once() {
 
         # 마지막 N 줄 미리보기 (빈 줄 제외, 우측 컬럼 너비 제한)
         if [ "$TAIL_LINES" -gt 0 ] && [ "$state_short" = "OK" ]; then
-            tmux capture-pane -t "$SESSION:0.$idx" -p 2>/dev/null \
+            tmux capture-pane -t "$pane_id" -p 2>/dev/null \
                 | grep -v "^$" \
                 | grep -vE "(context used|until auto-compact|bypass permissions|paste again|shift\+tab)" \
                 | tail -n "$TAIL_LINES" \

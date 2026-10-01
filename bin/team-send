@@ -106,14 +106,20 @@ SENDER=""
 if [ -n "${TMUX_PANE:-}" ]; then
     SENDER_PANE_SESSION="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "")"
     if [ "$SENDER_PANE_SESSION" = "$SESSION" ]; then
-        # 같은 세션 내 페인에서 호출 — pane_index 로 이름 매핑
-        SENDER_PANE="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_index}' 2>/dev/null || echo "")"
+        # 같은 세션 내 페인에서 호출 — 페인 태그(@member) 로 이름 매핑
+        SENDER_PANE="$(tmux display-message -p -t "$TMUX_PANE" '#{@member}' 2>/dev/null || echo "")"
         SENDER="$(name_for "$SENDER_PANE")"
     fi
 fi
 [ -z "$SENDER" ] && SENDER="외부"
 RECIPIENT_NAME="$(name_for "$IDX")"
-TARGET="${SESSION}:0.${IDX}"
+# 수신 페인은 tmux 인덱스가 아니라 setup-team.sh 가 붙인 @member 태그로 찾는다.
+TARGET="$(member_pane_id "$SESSION" "$IDX")"
+if [ -z "$TARGET" ]; then
+    echo "❌ 수신자 페인을 찾을 수 없습니다 (session=$SESSION, 수신자=$RECIPIENT_NAME, member=$IDX)." >&2
+    echo "   진단: tmux list-panes -s -t '$SESSION' -F '#{@member} #{@role} #{pane_id}'" >&2
+    exit 3
+fi
 
 # ── 수신자 페인 활성 검사 ─────────────────────────────────────
 # pane_current_command 가 셸이면 Claude 가 종료된 비활성 상태로 판단.
@@ -165,23 +171,24 @@ sleep "$SLEEP_SEC"
 tmux send-keys -t "$TARGET" Enter
 
 # ── positive delivery 확인 (Enter 발동 후 입력창 잔존 체크) ─────────
-# 판정 신호 (❯ 이후 입력창 구간만 검사 — transcript 에코 제외):
-#   (1) "Press up to edit queued" — 큐잉 성공 → OK
-#   (2) "Pasted text"             — collapse placeholder 잔존(긴 메시지) → 미제출
-#   (3) MSG_PROBE                 — 짧은 메시지 비-collapse 잔존 안전망
-# blind-Enter 안전장치: (2)(3) 신호가 ❯ 이후 구간에 있을 때만 재발사.
+# 입력 프롬프트 기호: Claude '❯' · Codex '›'. 마지막 기호 이후(입력창)만 검사 — transcript 에코 제외.
+# 판정 신호:
+#   (1) 큐잉 성공 → OK — Claude "Press up to edit queued" · Codex "Messages to be submitted"
+#   (2) collapse placeholder 잔존(긴 메시지) → 미제출 — Claude "Pasted text" · Codex "Pasted Content"
+#   (3) MSG_PROBE — 짧은 메시지 비-collapse 잔존 안전망
+# blind-Enter 안전장치: (2)(3) 신호가 입력창 구간에 있을 때만 재발사.
 MSG_PROBE="$(printf '%s' "$PAYLOAD" | head -1 | cut -c1-25)"
 _DELIVERED=1
 for _i in 1 2 3; do
     sleep 0.7
     _CAP="$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -20)"
     # 큐잉 성공 신호 → 즉시 OK
-    printf '%s' "$_CAP" | grep -qF "Press up to edit queued" && { _DELIVERED=1; break; }
-    # ❯ 이후 구간(입력창)만 추출 — transcript 에코 방지 (마지막 ❯ 기준)
-    _INPUT_AREA="$(printf '%s' "$_CAP" | awk '/❯/{buf=""; found=1} found{buf=buf$0 ORS} END{printf "%s", buf}')"
+    printf '%s' "$_CAP" | grep -qE "Press up to edit queued|Messages to be submitted" && { _DELIVERED=1; break; }
+    # 프롬프트 기호 이후 구간(입력창)만 추출 — transcript 에코 방지 (마지막 기호 기준)
+    _INPUT_AREA="$(printf '%s' "$_CAP" | awk '/❯|^[[:space:]]*›/{buf=""; found=1} found{buf=buf$0 ORS} END{printf "%s", buf}')"
     # 잔존 검사 먼저 — 입력창에 [Pasted text] 또는 MSG_PROBE 있으면 확정 미제출 → 재발사
     # (제출 성공이면 paste 가 transcript 로 이동해 입력창에서 사라지므로 잔존 = 미제출 확정)
-    if printf '%s' "$_INPUT_AREA" | grep -qF "Pasted text" || \
+    if printf '%s' "$_INPUT_AREA" | grep -qE "Pasted text|Pasted Content" || \
        { [ -n "$MSG_PROBE" ] && printf '%s' "$_INPUT_AREA" | grep -qF "$MSG_PROBE"; }; then
         tmux send-keys -t "$TARGET" Enter 2>/dev/null
         _DELIVERED=0
