@@ -12,20 +12,20 @@ PR 머지 게이트(보안·커버리지·성능·아키텍처)를 갖춘 품질
 ## 의존성
 
 - `tmux`
-- `claude` CLI (`@anthropic-ai/claude-code`) — `members.conf` 에 claude 엔진 멤버가 있을 때
-- `codex` CLI (`@openai/codex`, 로그인 필요) — `members.conf` 에 codex 엔진 멤버가 있을 때
+- `claude` CLI (`@anthropic-ai/claude-code`) — 팀 설정에 claude 엔진 멤버가 있을 때
+- `codex` CLI (`@openai/codex`, 로그인 필요) — 팀 설정에 codex 엔진 멤버가 있을 때
 - `jq` (선택 — team-send-verify Hook 동작에 필요. 미설치 시 Hook 만 graceful skip)
 - `rsync` (선택 — 스킬 배포에 사용. 미설치 시 `cp -R` fallback)
 
 ## 사용법
 
 ```bash
-bash setup-team.sh [세션이름] [-d <작업디렉터리>] [-c <멤버설정파일>]
+bash setup-team.sh [세션이름] [-d <작업디렉터리>] [-c <팀 이름|설정 파일>]
 ```
 
 - `세션이름` 기본값은 `team`
 - `-d` 미지정 시 현재 디렉터리를 작업 디렉터리로 사용 (없으면 생성)
-- `-c` 미지정 시 저장소의 `members.conf` 사용 (프로젝트별 팀 구성은 별도 파일로)
+- `-c` 미지정 시 **아이디어 팀**(`teams/idea.conf`). 팀 이름만 쓰면 `teams/<이름>.conf` (예: `-c edu-game`), 경로도 가능
 - 같은 이름의 세션이 있으면 재생성 여부를 묻고, 거절 시 기존 세션에 attach
 - 터미널에서 직접 실행하면 구성 완료 후 자동 attach. 수동 진입은 `tmux attach -t <세션이름>`
 
@@ -52,9 +52,8 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 ```
 .
 ├── setup-team.sh           # tmux 멀티페인 자동 셋업 (메인)
-├── members.conf            # 학습 게임 팀 설정 (기본) — 이름·역할 파일·라벨·엔진·모델·effort·별칭
 ├── lib/
-│   └── members.sh          # members.conf 로더 (setup-team.sh·team-send 공용)
+│   └── members.sh          # 팀 설정 로더 (setup-team.sh·team-send 공용)
 ├── bin/
 │   ├── team-send           # 페인 간 메시지 전송 헬퍼
 │   ├── team-status         # 페인 상태·컨텍스트 사용률 확인 헬퍼
@@ -70,7 +69,9 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 │   ├── 네이선.md · 마크저커버그.md · 이와타.md
 │   ├── 정민.md · 카맥.md
 │   └── 수진.md · 수영.md · 히사이시.md
-├── teams/
+├── teams/                  # 팀 설정 (형식·배정 원칙: teams/README.md)
+│   ├── idea.conf           # 아이디어 팀 10명 (기본)
+│   ├── edu-game.conf       # 학습 게임 팀 15명
 │   ├── narrative.conf      # 내러티브 게임 팀 14명
 │   └── backend.conf        # 개편 전 7명 구성
 ├── skills/
@@ -82,6 +83,27 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 ```
 
 ## 조직 (2026-10-02 개편)
+
+### 시작은 아이디어 팀 (`teams/idea.conf`, 10명 — Claude 5 : Codex 5)
+
+새 프로젝트는 아이디어 팀에서 시작합니다. 컨셉을 발산·검증·수렴해 **사용자가 컨셉과 프로젝트 유형을 결정**하면,
+제임스가 프로젝트 팀 구성안(`teams/<프로젝트>.conf`)을 제안하고 **사용자가 팀 구성을 결정**합니다(`roles/_team-workflow.md` §14).
+
+| 관점 | 멤버 (Claude · Codex) |
+|---|---|
+| 진행 | 제임스 |
+| 컨셉 결정 페어 | 미야모토 · 라이트 |
+| 교육 | 비고츠키 · 블룸 |
+| 서사 | 닥터 · 드럭만 |
+| 조사 · 규모 추정 | 수진 · 네이선 (모두 Codex) |
+| 비주얼 컨셉 | 수영 |
+
+```bash
+setup-team ideas -d ~/MyProject/ideas     # -c 생략 = 아이디어 팀
+```
+
+아래는 컨셉 결정 후 띄우는 프로젝트 팀입니다.
+
 
 **결정은 사용자가 합니다.** 제임스는 결정하지 않는 진행자로, 쟁점을 세우고 토론을 진행해
 선택지와 근거를 정리한 결정 요청서를 올립니다. 세션은 tmux 창 두 개로 열립니다.
@@ -127,7 +149,7 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 | 드럭만 | 시나리오 기획 | **Codex** gpt-6.1-sol · medium | 구조·긴장 중심 — 복선 회수, 엔딩까지의 정직한 축적 |
 
 ```bash
-setup-team narrative -d ~/MyProject/<내러티브 프로젝트 폴더> -c "$CLAUDE_ECG_TEAM_HOME/teams/narrative.conf"
+setup-team narrative -d ~/MyProject/<내러티브 프로젝트 폴더> -c narrative
 ```
 
 - 디렉터 위임: 대사 문구 다듬기, 장면 안 연출 세부, 음악 큐 위치 등은 우에다가 판단하고
@@ -135,8 +157,8 @@ setup-team narrative -d ~/MyProject/<내러티브 프로젝트 폴더> -c "$CLAU
 - 팀 설정의 `@project` 줄이 각 멤버 정체 블록에 표시되어, 공용 역할 파일의 유형별 항목(학습 게임 / 내러티브 게임)을 골라 적용합니다.
 - 두 팀을 동시에 띄우면 Codex 계정 한도를 함께 씁니다.
 
-엔진·모델·effort·창 배치는 `members.conf` 에서 바꿉니다. 개편 전 7명 구성은 `teams/backend.conf` 에 있습니다
-(`setup-team -c teams/backend.conf`). 역할 파일은 공용이므로 이 구성에서도 제임스는 진행자로 동작합니다.
+엔진·모델·effort·창 배치는 `teams/edu-game.conf` 에서 바꿉니다. 개편 전 7명 구성은 `teams/backend.conf` 에 있습니다
+(`setup-team -c backend`). 역할 파일은 공용이므로 이 구성에서도 제임스는 진행자로 동작합니다.
 
 - 같은 모델끼리 같은 실수를 놓치는 위험을 줄이려고 검증 게이트(정민·카맥)를 다른 모델(Codex)로 둡니다.
 - Codex 멤버 5명은 계정 사용 한도를 공유합니다. 기획 페어는 effort medium 으로 시작해
@@ -180,9 +202,9 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 
 ## 커스터마이징
 
-### 멤버 설정 (`members.conf`)
+### 팀 설정 (`teams/*.conf`)
 
-멤버 구성은 `members.conf` 한 파일이 단일 소스입니다. `setup-team.sh` 는 이 파일로 페인 레이아웃·라벨·
+팀 구성은 `teams/` 의 팀 설정 파일이 단일 소스입니다(형식·배정 원칙은 `teams/README.md`). `setup-team.sh` 는 이 파일로 페인 레이아웃·라벨·
 모델·effort·역할 주입을 만들고, `team-send` 는 같은 파일로 수신자 이름·별칭을 페인 인덱스로 바꿉니다.
 
 ```
@@ -211,7 +233,7 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 - 역할 파일은 `roles/<역할파일>.md`. 없으면 경고 후 역할 없이 기동합니다.
 - 형식 오류·중복 이름/라벨·잘못된 엔진(claude/codex)·effort(low~max) 는 tmux 세션을 만들기 전에 중단됩니다.
 - `setup-team.sh` 는 사용한 설정 파일 경로를 tmux 세션 옵션 `@team_members_file` 에 기록하고,
-  `team-send` 는 이를 먼저 읽습니다(없으면 `TEAM_MEMBERS_FILE` → 기본 `members.conf`).
+  `team-send` 는 이를 먼저 읽습니다(없으면 `TEAM_MEMBERS_FILE` → 기본 `teams/idea.conf`).
   그래서 `-c` 로 띄운 세션에서도 `team-send` 가 같은 구성을 씁니다.
 - 각 페인에는 멤버 번호 태그 `@member` 가 붙고, `team-send`·`team-status` 는 tmux 인덱스가 아니라 이 태그로
   페인을 찾습니다. 그래서 `~/.tmux.conf` 의 `base-index`·`pane-base-index` 설정과 무관하게 동작합니다.
@@ -234,7 +256,7 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 ### 멤버 추가 절차
 
 1. `roles/<역할파일>.md` 작성 (기존 역할 파일 구조 참고: 정체성·책임 범위·워크플로·분석 모드·Do/Don't)
-2. `members.conf` 에 한 줄 추가
+2. 해당 팀 설정(`teams/<팀>.conf`)에 한 줄 추가
 3. 역할 문서의 협업 관계 갱신 — 설정 파일로는 자동화되지 않는 부분입니다.
    - `roles/_team-workflow.md` §8.1 페인 매핑 표, 위임·검증 담당 언급
    - `roles/제임스.md` 위임 대상 목록, 도메인별 2차 검증 담당
@@ -248,7 +270,7 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
   실제 product 명·Jira 키·브랜치 컨벤션은 대상 프로젝트의 `CLAUDE.md` 또는 메모리(`project-*`)에 두고,
   공통 워크플로는 범용으로 유지하는 것을 권장합니다.
 - 역할 파일의 Redis 세션 저장소·TypeScript 코드 블록은 ADR·구현 가이드 **작성 예시**이며 기술 스택 지정이 아닙니다.
-- 프로젝트마다 인원·모델이 다르면 `members.conf` 를 복사해 수정하고 `setup-team -c <파일>` 로 띄웁니다.
+- 프로젝트마다 인원·모델이 다르면 가까운 `teams/*.conf` 를 복사해 수정하고 `setup-team -c <이름>` 으로 띄웁니다. 보통은 아이디어 팀이 팀 구성안을 제안합니다(§14).
 - 프런트엔드 비중이 큰 프로젝트라면 수영을 `claude-opus-5-5` · `high` 이상으로 올리세요.
 - 문서 템플릿(`templates/`)을 프로젝트 양식에 맞게 수정하면 멤버가 생성하는 `docs/` 산출물 형식이 바뀝니다.
 

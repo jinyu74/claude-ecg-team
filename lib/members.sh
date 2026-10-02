@@ -1,4 +1,4 @@
-# members.sh — members.conf 로더 (setup-team.sh · bin/team-send 가 source)
+# members.sh — 팀 설정(teams/*.conf) 로더 (setup-team.sh · bin/team-send 가 source)
 # bash 3.2 호환 (macOS 기본 bash): 연관 배열·mapfile 미사용.
 #
 # load_members <file>

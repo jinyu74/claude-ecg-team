@@ -11,7 +11,7 @@ NC='\033[0m'
 
 SESSION=""
 
-# ── 옵션 파싱: [세션이름] [-d|--dir <workdir>] [-c|--config <members.conf>] ──
+# ── 옵션 파싱: [세션이름] [-d|--dir <workdir>] [-c|--config <팀 이름|설정 파일>] ──
 WORKDIR=""
 MEMBERS_FILE=""
 while [ $# -gt 0 ]; do
@@ -19,10 +19,11 @@ while [ $# -gt 0 ]; do
         -d|--dir) WORKDIR="$2"; shift 2 ;;
         -c|--config) MEMBERS_FILE="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [session-name] [-d|--dir <workdir>] [-c|--config <members.conf>]"
+            echo "Usage: $0 [session-name] [-d|--dir <workdir>] [-c|--config <팀 이름|설정 파일>]"
             echo "  session-name : tmux 세션 이름 (기본: team)"
             echo "  -d, --dir    : 작업 디렉터리 (기본: 현재 디렉터리)"
-            echo "  -c, --config : 멤버 설정 파일 (기본: 저장소의 members.conf)"
+            echo "  -c, --config : 팀 이름(teams/<이름>.conf) 또는 설정 파일 경로 (기본: idea — 아이디어 팀)"
+            echo "                 팀 목록: $(cd "$(dirname "$0")/teams" 2>/dev/null && ls *.conf 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' ')"
             exit 0 ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) SESSION="$1"; shift ;;
@@ -35,7 +36,12 @@ ROLES_DIR="$SCRIPT_DIR/roles"
 
 # 멤버 설정 로드 — 형식 오류는 tmux 세션을 만들기 전에 실패시킨다.
 . "$SCRIPT_DIR/lib/members.sh"
-MEMBERS_FILE="${MEMBERS_FILE:-$SCRIPT_DIR/members.conf}"
+# 팀 설정: 기본은 아이디어 팀. 이름만 주면 teams/<이름>.conf, 경로를 주면 그 파일.
+MEMBERS_FILE="${MEMBERS_FILE:-idea}"
+case "$MEMBERS_FILE" in
+    */*|*.conf) ;;
+    *) MEMBERS_FILE="$SCRIPT_DIR/teams/$MEMBERS_FILE.conf" ;;
+esac
 [ -f "$MEMBERS_FILE" ] && MEMBERS_FILE="$(cd "$(dirname "$MEMBERS_FILE")" && pwd)/$(basename "$MEMBERS_FILE")"
 load_members "$MEMBERS_FILE" || exit 1
 WORKDIR="${WORKDIR:-$PWD}"
@@ -69,7 +75,7 @@ member_identity() {
     done
     [ "${M_ENGINE[$i]}" = "codex" ] && eng="Codex" || eng="Claude"
     cat <<EOF
-## 당신의 정체 (setup-team.sh 가 members.conf 로 생성)
+## 당신의 정체 (setup-team.sh 가 팀 설정으로 생성)
 
 - 이름: **${M_NAME[$i]}** — team-send 수신자 이름${M_ALIASES[$i]:+ (별칭: ${M_ALIASES[$i]})}
 - 엔진: **$eng** (${M_MODEL[$i]}, effort ${M_EFFORT[$i]})
@@ -118,7 +124,9 @@ start_member_in_pane() {
         local tq="'''"
         local launcher="$merged_dir/${M_NAME[$idx]}.codex.sh"
         local codex_cmd
-        codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
+        # --search: 웹 검색 사용 (조사 역할). check_for_update_on_startup=false: 기동 시 업데이트 안내가 뜨면
+        # 자동 입력(Enter)이 "Update now" 로 선택돼 전역 npm 업데이트가 실행되므로 끈다 (업데이트는 사용자가 직접).
+        codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox --search -c check_for_update_on_startup=false -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
         if [ -n "$merged_file" ]; then
             if grep -qF "$tq" "$merged_file"; then
                 echo -e "${RED}❌ $merged_file 에 $tq 가 있어 Codex 에 주입할 수 없습니다${NC}"
@@ -179,7 +187,7 @@ echo -e "${YELLOW}[0/4] 사전 요구사항 확인...${NC}"
 
 MISSING=()
 command -v tmux   &>/dev/null || MISSING+=("tmux (sudo apt install -y tmux)")
-# 엔진 CLI 는 members.conf 에서 실제로 쓰는 것만 요구한다.
+# 엔진 CLI 는 팀 설정에서 실제로 쓰는 것만 요구한다.
 case " ${M_ENGINE[*]} " in *" claude "*)
     command -v claude &>/dev/null || MISSING+=("claude (npm install -g @anthropic-ai/claude-code)") ;; esac
 case " ${M_ENGINE[*]} " in *" codex "*)
@@ -302,7 +310,7 @@ fi
 # ── [2/4] TMUX 세션 & 레이아웃 구성 ────────────────────────
 echo -e "\n${YELLOW}[2/4] TMUX 세션 & 레이아웃 구성...${NC}"
 
-# members.conf 의 [창이름] 구획마다 tmux 창 하나. 구획이 없으면 창 'team' 하나.
+# 팀 설정의 [창이름] 구획마다 tmux 창 하나. 구획이 없으면 창 'team' 하나.
 # 창마다 레이아웃: 그 창의 첫 멤버는 좌측 메인, 나머지는 우측 2열 그리드에 행 우선 배치.
 #   ┌─────────┬──────────┬──────────┐
 #   │         │ 2번째    │ 3번째    │
@@ -312,7 +320,7 @@ echo -e "\n${YELLOW}[2/4] TMUX 세션 & 레이아웃 구성...${NC}"
 #   │         │ 6번째    │ 7번째    │   ← 우측 인원이 홀수면 마지막 행은 1칸
 #   └─────────┴──────────┴──────────┘
 # 페인은 ID(#{pane_id}) 로 추적하고 @member 태그로 찾으므로 tmux 인덱스·창 번호와 무관하다.
-# 같은 창의 멤버는 members.conf 에서 연속이다 (lib/members.sh 가 중복 구획을 거부).
+# 같은 창의 멤버는 팀 설정에서 연속이다 (lib/members.sh 가 중복 구획을 거부).
 
 # 창별 우측 행 수 중 최댓값으로 터미널 최소 높이를 정한다.
 MAX_ROWS=0
@@ -397,7 +405,7 @@ done
 tmux select-window -t "${WINDOW_IDS[0]}"
 
 # 페인 태그 — @role: 보더 표시용 라벨 (Claude OSC 2 영향 없음)
-#             @member: members.conf 행 번호. team-send·team-status 는 tmux 인덱스가 아니라 이 태그로 페인을 찾는다.
+#             @member: 팀 설정 행 번호. team-send·team-status 는 tmux 인덱스가 아니라 이 태그로 페인을 찾는다.
 #             @engine: claude | codex. team-status 가 엔진별로 컨텍스트·사용 한도를 읽는 데 쓴다.
 i=0
 while [ $i -lt $M_COUNT ]; do
@@ -435,7 +443,7 @@ fi
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
 echo -e "\n${YELLOW}[3/4] 멤버 실행 중 (Claude / Codex)... (페인당 최대 1분)${NC}"
 
-# 멤버별 엔진·모델·effort·역할 파일은 members.conf 가 단일 소스.
+# 멤버별 엔진·모델·effort·역할 파일은 팀 설정(teams/*.conf)이 단일 소스.
 i=0
 while [ $i -lt $M_COUNT ]; do
     pane_id="${PANE_IDS[$i]}"
