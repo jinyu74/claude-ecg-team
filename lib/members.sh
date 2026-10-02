@@ -7,6 +7,8 @@
 #   W_NAME (창 이름, 등장 순서), W_COUNT
 #
 # '[창이름]' 줄은 이후 멤버를 그 tmux 창에 배치한다. 첫 구획 이전 멤버는 창 'team'.
+# '@project <설명>' 줄은 팀의 프로젝트 종류(TEAM_PROJECT). 멤버 정체 블록에 표시되어
+# 역할 파일의 프로젝트 유형별 항목(예: 학습 게임 전용)을 적용할지 판단하는 기준이 된다.
 #   실패 시 stderr 에 사유를 출력하고 1 반환.
 
 _trim() {
@@ -19,7 +21,7 @@ _trim() {
 load_members() {
     local file="$1" line lineno=0 name role label engine model effort aliases extra i window="team" w
     M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_WINDOW=(); M_COUNT=0
-    W_NAME=(); W_COUNT=0
+    W_NAME=(); W_COUNT=0; TEAM_PROJECT=""
 
     [ -f "$file" ] || { echo "멤버 설정 파일 없음: $file" >&2; return 1; }
 
@@ -27,6 +29,12 @@ load_members() {
         lineno=$((lineno + 1))
         line="$(_trim "$line")"
         case "$line" in ''|'#'*) continue ;; esac
+
+        # 프로젝트 종류: @project <설명>
+        case "$line" in
+            '@project '*) TEAM_PROJECT="$(_trim "${line#@project }")"; continue ;;
+            '@'*) echo "$file:$lineno: 알 수 없는 지시어 '${line%% *}' (@project 만 지원)" >&2; return 1 ;;
+        esac
 
         # 창 구획: [창이름]
         case "$line" in

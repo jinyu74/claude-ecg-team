@@ -73,6 +73,7 @@ member_identity() {
 
 - 이름: **${M_NAME[$i]}** — team-send 수신자 이름${M_ALIASES[$i]:+ (별칭: ${M_ALIASES[$i]})}
 - 엔진: **$eng** (${M_MODEL[$i]}, effort ${M_EFFORT[$i]})
+- 프로젝트: ${TEAM_PROJECT:-지정 없음}
 - tmux 창: ${M_WINDOW[$i]}
 - 역할 파일: roles/${M_ROLE[$i]}.md
 - 같은 역할의 페어: ${partners:-없음}
@@ -94,7 +95,8 @@ start_member_in_pane() {
     # 정체 블록 + 공통 워크플로(_team-workflow.md) + 역할 파일을 멤버별 단일 파일로 합쳐 주입.
     # 파일 이름은 멤버 이름 — 페어가 같은 역할 파일을 써도 서로 덮어쓰지 않는다.
     local common_file="$ROLES_DIR/_team-workflow.md"
-    local merged_dir="$ROLES_DIR/.merged"
+    # 세션별 폴더 — 여러 팀(세션)이 같은 멤버 이름을 써도 서로 덮어쓰지 않는다.
+    local merged_dir="$ROLES_DIR/.merged/$SESSION"
     local merged_file="$merged_dir/${M_NAME[$idx]}.md"
     mkdir -p "$merged_dir"
     {
@@ -206,6 +208,7 @@ command -v codex  &>/dev/null && echo "  ✅ $(codex --version 2>/dev/null | hea
 echo "  📂 작업 디렉터리: $WORKDIR"
 echo "  🏷️  세션 이름: $SESSION"
 echo "  👥 멤버 설정: $MEMBERS_FILE (${M_COUNT}명)"
+[ -n "$TEAM_PROJECT" ] && echo "  🎯 프로젝트: $TEAM_PROJECT"
 
 # ── [0.5/4] team-send-verify hook + 스킬 배포 (사용자 전역) ─────────────
 # 본 단계는 jq 가 있을 때만 hook 등록 진행. 스킬은 jq 없이도 배포.

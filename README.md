@@ -52,7 +52,7 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 ```
 .
 ├── setup-team.sh           # tmux 멀티페인 자동 셋업 (메인)
-├── members.conf            # 멤버 설정 단일 소스 (이름·역할 파일·라벨·모델·effort·별칭)
+├── members.conf            # 학습 게임 팀 설정 (기본) — 이름·역할 파일·라벨·엔진·모델·effort·별칭
 ├── lib/
 │   └── members.sh          # members.conf 로더 (setup-team.sh·team-send 공용)
 ├── bin/
@@ -65,10 +65,13 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 │   ├── 교육리서치.md        # 결정 페어 공용 (비고츠키·블룸)
 │   ├── 콘텐츠기획.md        # 결정 페어 공용 (파인만·세이건)
 │   ├── 게임기획.md          # 결정 페어 공용 (미야모토·라이트)
+│   ├── 시나리오기획.md      # 결정 페어 공용 (닥터·드럭만, 내러티브 팀)
+│   ├── 우에다.md            # 디렉터 (내러티브 팀)
 │   ├── 네이선.md · 마크저커버그.md · 이와타.md
 │   ├── 정민.md · 카맥.md
 │   └── 수진.md · 수영.md · 히사이시.md
 ├── teams/
+│   ├── narrative.conf      # 내러티브 게임 팀 14명
 │   └── backend.conf        # 개편 전 7명 구성
 ├── skills/
 │   └── team-send-verify/   # ~/.claude/skills/ 로 배포되는 Hook 가이드 스킬
@@ -110,7 +113,27 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 | 카맥 | 성능 게이트 | **Codex** gpt-6.1-sol · medium | 저사양 기기 기준 프레임·로딩·용량·배터리, ADR 반론 |
 | 수진 | 리서처 | Claude Sonnet 5.5 (1M) · medium | 엔진·기술 비교, 경쟁 앱·시장, 플랫폼 정책 사실 확인 |
 | 수영 | 디자인 리드 | Claude Opus 5.5 · high | UI/UX, 아트 방향·스타일 가이드, 접근성, 아동 친화 화면 |
-| 히사이시 | 아트·사운드 에셋 | Claude Sonnet 5.5 (1M) · medium | 에셋 명세·조달·라이선스. 외부 도구는 매번 최신 조사 후 사용자 결정 |
+| 히사이시 | 음악 감독 · 아트·사운드 에셋 | Claude Sonnet 5.5 (1M) · medium | 테마 선율·음악 큐, 에셋 명세·조달·라이선스. 외부 도구는 매번 최신 조사 후 사용자 결정 |
+
+### 내러티브 게임 팀 (`teams/narrative.conf`, 14명)
+
+영화 같은 시나리오로 플레이어가 주인공이 되고, 엔딩에서 깊은 감동을 주는 게임을 위한 팀입니다.
+교육 리서치·콘텐츠 기획 페어 대신 아래 멤버가 기획 창에 들어가고, 개발 창은 학습 게임 팀과 같습니다.
+
+| 이름 | 역할 | 엔진 · 모델 · effort | 핵심 책임 |
+|---|---|---|---|
+| 우에다 | 디렉터 | Claude Opus 5.5 · high | 톤 바이블·감정 지도·연출 방향·일관성 검수. **작은 창작 판단을 위임받아** 판단·기록 (§13) |
+| 닥터 | 시나리오 기획 | Claude Opus 5.5 · high | 인물·감정 중심 — 주인공이 무엇을 원하고 잃는가 |
+| 드럭만 | 시나리오 기획 | **Codex** gpt-6.1-sol · medium | 구조·긴장 중심 — 복선 회수, 엔딩까지의 정직한 축적 |
+
+```bash
+setup-team narrative -d ~/MyProject/<내러티브 프로젝트 폴더> -c "$CLAUDE_ECG_TEAM_HOME/teams/narrative.conf"
+```
+
+- 디렉터 위임: 대사 문구 다듬기, 장면 안 연출 세부, 음악 큐 위치 등은 우에다가 판단하고
+  `docs/direction/delegated-log.md` 에 기록합니다. 줄거리·결말·인물의 운명·분기 구조·톤 바이블은 사용자가 결정합니다.
+- 팀 설정의 `@project` 줄이 각 멤버 정체 블록에 표시되어, 공용 역할 파일의 유형별 항목(학습 게임 / 내러티브 게임)을 골라 적용합니다.
+- 두 팀을 동시에 띄우면 Codex 계정 한도를 함께 씁니다.
 
 엔진·모델·effort·창 배치는 `members.conf` 에서 바꿉니다. 개편 전 7명 구성은 `teams/backend.conf` 에 있습니다
 (`setup-team -c teams/backend.conf`). 역할 파일은 공용이므로 이 구성에서도 제임스는 진행자로 동작합니다.
@@ -122,7 +145,7 @@ setup-team api -d ~/work/api                # 세션 이름·작업 디렉터리
 - effort 는 실행 시 전달되며(Claude `--effort`, Codex `model_reasoning_effort`), 페인 안에서 세션 단위 조정도 가능합니다.
 
 실행 시 각 멤버에게 **정체 블록**(이름·엔진·창·페어 상대) + 공통 워크플로 + 역할 파일이 합쳐져 주입됩니다
-(`roles/.merged/<이름>.md`).
+(`roles/.merged/<세션>/<이름>.md` — 세션별 폴더라 여러 팀을 동시에 띄워도 섞이지 않음).
 
 ### 협업 흐름 요약
 
@@ -169,6 +192,7 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 ```
 
 - **행 순서 = 멤버 번호.**
+- **`@project <설명>` 줄**은 프로젝트 종류입니다. 멤버 정체 블록에 표시됩니다.
 - **`[창이름]` 줄로 tmux 창을 나눕니다.** 구획 아래 멤버들이 그 창에 들어가고, 구획이 없으면 창 `team` 하나입니다.
   같은 창 이름을 두 번 쓸 수 없습니다(창의 멤버는 연속으로 적습니다).
 - 창마다 첫 멤버는 좌측 메인 페인, 나머지는 우측 2열 그리드에 행 우선으로 배치됩니다.
@@ -196,7 +220,7 @@ team-status --limits          # Codex 사용 한도(5시간·주간)만 확인
 ### Codex 엔진
 
 - 역할 지시는 `-c developer_instructions` 로 주입합니다(공통 워크플로 + 역할 파일, ~45KB). 긴 지시를 페인에
-  타이핑하지 않도록 `roles/.merged/<역할파일>.codex.sh` 실행 스크립트를 만들어 호출합니다.
+  타이핑하지 않도록 `roles/.merged/<세션>/<이름>.codex.sh` 실행 스크립트를 만들어 호출합니다.
 - 실행 옵션은 Claude 의 `--dangerously-skip-permissions` 에 대응하는 `--dangerously-bypass-approvals-and-sandbox` 입니다.
   샌드박스가 꺼져 있어야 Codex 멤버가 `team-send`(tmux)를 쓸 수 있습니다.
 - 처음 쓰는 폴더의 신뢰 대화상자는 자동으로 수락합니다. `~/.codex/hooks.json` 의 훅 검토 대화상자는 **신뢰하지 않고 건너뜁니다**
