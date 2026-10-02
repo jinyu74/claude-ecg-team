@@ -83,11 +83,74 @@ member_identity() {
 - tmux 창: ${M_WINDOW[$i]}
 - 역할 파일: roles/${M_ROLE[$i]}.md
 - 같은 역할의 페어: ${partners:-없음}
+- 부여된 플러그인: ${M_PLUGINS[$i]:-없음} (팀 설정 플러그인 열 — 이 목록 밖의 스킬·플러그인이 설치돼 있다고 가정하지 않는다)
 - 팀 구성은 \`team-send -h\`, 상태는 \`team-status\` 로 확인한다.
 
 ---
 
 EOF
+}
+
+# ── 유틸: 멤버별 플러그인 (팀 설정 플러그인 열) ─────────────
+# Claude: 공식 마켓플레이스 사본의 플러그인 폴더를 --plugin-dir 로 그 멤버 세션에만 로드 (전역 활성화 안 함).
+# Codex : openai-curated-remote 플러그인을 설치해 두고 전역은 끈 상태(~/.codex/config.toml enabled=false)에서
+#         멤버마다 -c plugins.<이름>@openai-curated-remote.enabled=true 로 켠다 (키에 따옴표를 쓰면 적용되지 않음).
+CLAUDE_MARKET="$HOME/.claude/plugins/marketplaces/claude-plugins-official"
+CODEX_PLUGIN_MARKET="openai-curated-remote"
+CODEX_PLUGIN_CACHE="${CODEX_HOME:-$HOME/.codex}/plugins/cache/$CODEX_PLUGIN_MARKET"
+# check_plugins — 기동 전 점검: 팀 설정의 플러그인이 실제로 있는지 (없는 것은 경고 후 건너뜀)
+check_plugins() {
+    local i=0 p
+    while [ $i -lt $M_COUNT ]; do
+        for p in ${M_PLUGINS[$i]}; do
+            if [ "${M_ENGINE[$i]}" = "codex" ]; then
+                [ -d "$CODEX_PLUGIN_CACHE/$p" ] || echo -e "  ${YELLOW}⚠️  ${M_NAME[$i]}: Codex 플러그인 '$p' 미설치 — codex plugin add $p@$CODEX_PLUGIN_MARKET${NC}"
+            else
+                [ -d "$CLAUDE_MARKET/plugins/$p" ] || [ -d "$CLAUDE_MARKET/external_plugins/$p" ] \
+                    || echo -e "  ${YELLOW}⚠️  ${M_NAME[$i]}: Claude 플러그인 '$p' 가 공식 마켓플레이스 사본에 없음 ($CLAUDE_MARKET)${NC}"
+            fi
+        done
+        i=$((i + 1))
+    done
+}
+
+# 팀이 관리하는 Codex 플러그인 = 모든 팀 설정(teams/*.conf + 이번 설정)의 codex 멤버 플러그인 열 합집합.
+# 대화형 Codex 는 원격 설치 플러그인의 enabled 설정을 따르지 않으므로(2026-10-02 확인), 멤버에게 부여되지 않은
+# 관리 대상 플러그인의 스킬을 skills.config 로 경로 단위 비활성화해 멤버별 부여를 실현한다.
+codex_managed_plugins() {
+    awk -F'|' '!/^[[:space:]]*[#@[]/ && NF >= 8 {
+        e = $4; gsub(/[[:space:]]/, "", e)
+        if (e == "codex") { n = split($8, a, /[[:space:]]+/); for (k = 1; k <= n; k++) if (a[k] != "") print a[k] }
+    }' "$SCRIPT_DIR"/teams/*.conf "$MEMBERS_FILE" 2>/dev/null | sort -u
+}
+
+# member_plugin_args <멤버 인덱스> — 엔진에 맞는 플러그인 인자를 한 줄에 하나씩 출력
+member_plugin_args() {
+    local i="$1" p dir off="" f
+    if [ "${M_ENGINE[$i]}" = "codex" ]; then
+        for p in $(codex_managed_plugins); do
+            case " ${M_PLUGINS[$i]} " in *" $p "*) continue ;; esac
+            [ -d "$CODEX_PLUGIN_CACHE/$p" ] || continue
+            while IFS= read -r f; do
+                [ -n "$f" ] && off="${off:+$off,}{path=\"$f\",enabled=false}"
+            done <<EOF
+$(find "$CODEX_PLUGIN_CACHE/$p" -name SKILL.md 2>/dev/null)
+EOF
+        done
+        [ -n "$off" ] && { echo "-c"; echo "skills.config=[$off]"; }
+    fi
+    for p in ${M_PLUGINS[$i]}; do
+        if [ "${M_ENGINE[$i]}" = "codex" ]; then
+            if [ -d "$CODEX_PLUGIN_CACHE/$p" ]; then
+                echo "-c"; echo "plugins.$p@$CODEX_PLUGIN_MARKET.enabled=true"
+            fi
+        else
+            dir=""
+            [ -d "$CLAUDE_MARKET/plugins/$p" ] && dir="$CLAUDE_MARKET/plugins/$p"
+            [ -z "$dir" ] && [ -d "$CLAUDE_MARKET/external_plugins/$p" ] && dir="$CLAUDE_MARKET/external_plugins/$p"
+            [ -n "$dir" ] && { echo "--plugin-dir"; echo "$dir"; }
+        fi
+    done
 }
 
 # ── 유틸: 멤버 실행 (claude | codex) + 다이얼로그 자동 처리 ──
@@ -115,7 +178,17 @@ start_member_in_pane() {
     } > "$merged_file"
 
     # team-send 헬퍼를 PATH 에 노출 (페인 간 메시지 전송용)
-    local prefix="cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE"
+    # TEAM_MEMBER·TEAM_ENGINE: 체크포인트 훅(bin/team-checkpoint)이 멤버를 식별하는 데 쓴다.
+    # 한글 이름은 printf %q 로 감싸면 페인의 zsh 가 바이트를 잘못 해석하므로 큰따옴표로만 감싼다.
+    local prefix="cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" TEAM_MEMBER=\"${M_NAME[$idx]}\" TEAM_ENGINE=$engine TEAM_SESSION=\"$SESSION\" && unset CLAUDECODE"
+    # security-guidance: 여러 멤버가 한 작업 폴더를 공유하므로 턴 종료 LLM 리뷰는 끈다 (플러그인 README 권장 — 다른 멤버가 HEAD 를 옮길 수 있음)
+    case " ${M_PLUGINS[$idx]} " in *" security-guidance "*) prefix="$prefix && export ENABLE_STOP_REVIEW=0" ;; esac
+    local checkpoint="$SCRIPT_DIR/bin/team-checkpoint"
+    local plugin_args=()
+    while IFS= read -r line; do plugin_args[${#plugin_args[@]}]="$line"; done <<EOF
+$(member_plugin_args "$idx")
+EOF
+    [ -n "${plugin_args[0]:-}" ] || plugin_args=()
 
     if [ "$engine" = "codex" ]; then
         # Codex 는 --append-system-prompt-file 이 없어 developer_instructions 설정으로 주입한다.
@@ -126,7 +199,9 @@ start_member_in_pane() {
         local codex_cmd
         # --search: 웹 검색 사용 (조사 역할). check_for_update_on_startup=false: 기동 시 업데이트 안내가 뜨면
         # 자동 입력(Enter)이 "Update now" 로 선택돼 전역 npm 업데이트가 실행되므로 끈다 (업데이트는 사용자가 직접).
-        codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox --search -c check_for_update_on_startup=false -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
+        # --no-daemon: 대화형 Codex 는 공유 백그라운드 서버에 붙고 플러그인 상태가 서버 단위로 잡혀, 멤버별 플러그인 지정이
+        # 새어 나간다(2026-10-02 확인). 멤버마다 독립 프로세스로 띄워 멤버별 설정(-c)이 그대로 적용되게 한다.
+        codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox --no-daemon --search -c check_for_update_on_startup=false -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
         if [ -n "$merged_file" ]; then
             if grep -qF "$tq" "$merged_file"; then
                 echo -e "${RED}❌ $merged_file 에 $tq 가 있어 Codex 에 주입할 수 없습니다${NC}"
@@ -134,6 +209,15 @@ start_member_in_pane() {
             fi
             codex_cmd="$codex_cmd -c \"developer_instructions=$tq\$(cat $(printf '%q' "$merged_file"))$tq\""
         fi
+        # 체크포인트 훅: PreCompact 에서 저장 → 정리 후 SessionStart(compact) 또는 다음 UserPromptSubmit 에서 복구 지시 1회 주입.
+        # (Codex PreCompact/PostCompact 는 additionalContext 를 받지 않고, compact 후 SessionStart 가 오지 않는 경우가 있음 — 2026-10-02 확인) -c 로 넣은 훅은 신뢰 저장이 없으므로
+        # --dangerously-bypass-hook-trust 로 이 실행에서만 신뢰 확인을 건너뛴다 (~/.codex/hooks.json 의 사용자 훅도 함께 실행된다).
+        codex_cmd="$codex_cmd --dangerously-bypass-hook-trust"
+        codex_cmd="$codex_cmd -c $(printf '%q' "hooks.PreCompact=[{hooks=[{type=\"command\",command=\"$checkpoint pre\",timeout=30}]}]")"
+        codex_cmd="$codex_cmd -c $(printf '%q' "hooks.SessionStart=[{matcher=\"compact\",hooks=[{type=\"command\",command=\"$checkpoint post\",timeout=30}]}]")"
+        codex_cmd="$codex_cmd -c $(printf '%q' "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"$checkpoint post\",timeout=30}]}]")"
+        local a
+        for a in "${plugin_args[@]}"; do codex_cmd="$codex_cmd $(printf '%q' "$a")"; done
         printf '#!/bin/bash\n%s\n' "$codex_cmd" > "$launcher"
         tmux send-keys -t "$pane" "$prefix && bash \"$launcher\"" Enter
 
@@ -152,10 +236,19 @@ start_member_in_pane() {
         return 1
     fi
 
-    local role_flag=""
-    [ -n "$merged_file" ] && role_flag="--append-system-prompt-file \"$merged_file\""
-    tmux send-keys -t "$pane" \
-        "$prefix && $(command -v claude) --model '$model' --effort '$effort' $role_flag --dangerously-skip-permissions" Enter
+    # 체크포인트 훅: PreCompact 에서 저장, 정리 후 SessionStart(source=compact) 에서 복구 지시 주입.
+    # --settings 로 이 멤버 세션에만 등록한다 (사용자 전역 settings.json 은 건드리지 않음).
+    local settings="$merged_dir/${M_NAME[$idx]}.settings.json"
+    printf '{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"%s pre","timeout":30}]}],"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"%s post","timeout":30}]}]}}\n' \
+        "$checkpoint" "$checkpoint" > "$settings"
+    local launcher="$merged_dir/${M_NAME[$idx]}.claude.sh"
+    local claude_cmd a
+    claude_cmd="exec $(printf '%q' "$(command -v claude)") --model $(printf '%q' "$model") --effort $(printf '%q' "$effort")"
+    claude_cmd="$claude_cmd --append-system-prompt-file $(printf '%q' "$merged_file") --settings $(printf '%q' "$settings")"
+    for a in "${plugin_args[@]}"; do claude_cmd="$claude_cmd $(printf '%q' "$a")"; done
+    claude_cmd="$claude_cmd --dangerously-skip-permissions"
+    printf '#!/bin/bash\n%s\n' "$claude_cmd" > "$launcher"
+    tmux send-keys -t "$pane" "$prefix && bash \"$launcher\"" Enter
 
     # 다이얼로그 자동 처리 — 선택 항목을 확인한 뒤 고른다.
     #   폴더 신뢰: 기본 선택이 "No, exit" 이므로 Enter 만 보내면 Claude 가 종료된다.
@@ -213,6 +306,8 @@ echo "  ✅ tmux $(tmux -V | awk '{print $2}')"
 command -v claude &>/dev/null && echo "  ✅ claude $(claude --version 2>/dev/null | head -1)"
 command -v codex  &>/dev/null && echo "  ✅ $(codex --version 2>/dev/null | head -1)"
 [ "$JQ_OK" -eq 1 ] && echo "  ✅ jq $(jq --version 2>/dev/null)"
+[ "$JQ_OK" -eq 1 ] || echo -e "  ${YELLOW}⚠️  jq 미설치 — 체크포인트 훅·Codex 한도 조회가 동작하지 않습니다${NC}"
+check_plugins
 echo "  📂 작업 디렉터리: $WORKDIR"
 echo "  🏷️  세션 이름: $SESSION"
 echo "  👥 멤버 설정: $MEMBERS_FILE (${M_COUNT}명)"

@@ -3,7 +3,7 @@
 #
 # load_members <file>
 #   성공 시 아래 배열을 채운다 (인덱스 = tmux 페인 인덱스).
-#   M_NAME M_ROLE M_LABEL M_ENGINE M_MODEL M_EFFORT M_ALIASES M_WINDOW, M_COUNT
+#   M_NAME M_ROLE M_LABEL M_ENGINE M_MODEL M_EFFORT M_ALIASES M_PLUGINS M_WINDOW, M_COUNT
 #   W_NAME (창 이름, 등장 순서), W_COUNT
 #
 # '[창이름]' 줄은 이후 멤버를 그 tmux 창에 배치한다. 첫 구획 이전 멤버는 창 'team'.
@@ -19,8 +19,8 @@ _trim() {
 }
 
 load_members() {
-    local file="$1" line lineno=0 name role label engine model effort aliases extra i window="team" w
-    M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_WINDOW=(); M_COUNT=0
+    local file="$1" line lineno=0 name role label engine model effort aliases plugins extra i window="team" w
+    M_NAME=(); M_ROLE=(); M_LABEL=(); M_ENGINE=(); M_MODEL=(); M_EFFORT=(); M_ALIASES=(); M_PLUGINS=(); M_WINDOW=(); M_COUNT=0
     W_NAME=(); W_COUNT=0; TEAM_PROJECT=""
 
     [ -f "$file" ] || { echo "멤버 설정 파일 없음: $file" >&2; return 1; }
@@ -49,14 +49,14 @@ load_members() {
                 continue ;;
         esac
 
-        IFS='|' read -r name role label engine model effort aliases extra <<EOF
+        IFS='|' read -r name role label engine model effort aliases plugins extra <<EOF
 $line
 EOF
         name="$(_trim "$name")"; role="$(_trim "$role")"; label="$(_trim "$label")"; engine="$(_trim "$engine")"
-        model="$(_trim "$model")"; effort="$(_trim "$effort")"; aliases="$(_trim "$aliases")"
+        model="$(_trim "$model")"; effort="$(_trim "$effort")"; aliases="$(_trim "$aliases")"; plugins="$(_trim "$plugins")"
 
         if [ -n "$extra" ] || [ -z "$name" ] || [ -z "$label" ] || [ -z "$engine" ] || [ -z "$model" ] || [ -z "$effort" ]; then
-            echo "$file:$lineno: 형식 오류 — '이름 | 역할파일 | 페인 라벨 | 엔진 | 모델 | effort | 별칭'" >&2
+            echo "$file:$lineno: 형식 오류 — '이름 | 역할파일 | 페인 라벨 | 엔진 | 모델 | effort | 별칭 | 플러그인(선택)'" >&2
             return 1
         fi
         case "$engine" in
@@ -76,7 +76,7 @@ EOF
         done
 
         M_NAME[$M_COUNT]="$name"; M_ROLE[$M_COUNT]="${role:-$name}"; M_LABEL[$M_COUNT]="$label"; M_ENGINE[$M_COUNT]="$engine"; M_WINDOW[$M_COUNT]="$window"
-        M_MODEL[$M_COUNT]="$model"; M_EFFORT[$M_COUNT]="$effort"; M_ALIASES[$M_COUNT]="$aliases"
+        M_MODEL[$M_COUNT]="$model"; M_EFFORT[$M_COUNT]="$effort"; M_ALIASES[$M_COUNT]="$aliases"; M_PLUGINS[$M_COUNT]="$plugins"
         M_COUNT=$((M_COUNT + 1))
         # 멤버가 있는 창만 등록 (등장 순서 유지)
         if [ $W_COUNT -eq 0 ] || [ "${W_NAME[$((W_COUNT - 1))]}" != "$window" ]; then

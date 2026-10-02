@@ -32,6 +32,8 @@ tmux 조작(창·페인 이동, 스크롤, 빠져나오기)은 **[tmux 사용 �
 - `codex` CLI (`@openai/codex`, 로그인 필요) — 팀에 Codex 멤버가 있을 때
 - `jq` — Codex 컨텍스트·한도 조회, team-send-verify Hook 등록 (없으면 해당 기능만 건너뜀)
 - `lsof` — Codex 페인과 세션 기록 연결 (macOS 기본 포함)
+- `python3` — `security-guidance` 플러그인 (첫 실행 때 `~/.claude/security/agent-sdk-venv` 에 전용 venv 생성)
+- `npx` (Node.js) — `playwright` 플러그인 MCP
 - `rsync` (선택) — 스킬 배포. 없으면 `cp -R`
 
 ### 전역 실행 설정
@@ -86,7 +88,7 @@ setup-team [세션이름] [-d <작업디렉터리>] [-c <팀 이름|설정 파�
 | 내러티브 게임 팀 | `narrative` | 14 (10 : 4) | 기획 · 개발 | 영화 같은 시나리오, 주인공 몰입, 엔딩의 감동 |
 | 백엔드 팀 | `backend` | 7 (5 : 2) | team | 개편 전 구성 (백엔드 서비스) |
 
-형식과 모델·effort 배정 원칙은 [`teams/README.md`](teams/README.md) 에 있습니다.
+형식, 모델·effort 배정 원칙, **멤버별 플러그인 목록**은 [`teams/README.md`](teams/README.md) 에 있습니다.
 
 ### 아이디어 팀
 
@@ -186,11 +188,31 @@ team-status --limits                       # Codex 5시간·주간 한도만
 
 각 멤버에게 다음 세 가지가 합쳐져 주입됩니다. 파일은 `roles/.merged/<세션>/<이름>.md` 에 생성되며(세션별 폴더라 여러 팀을 동시에 띄워도 섞이지 않음), 커밋하지 않습니다(`.gitignore`).
 
-1. **정체 블록** — 이름·별칭, 엔진·모델·effort, 프로젝트(`@project`), 창, 같은 역할의 페어 상대
+1. **정체 블록** — 이름·별칭, 엔진·모델·effort, 프로젝트(`@project`), 창, 같은 역할의 페어 상대, 부여된 플러그인
 2. **공통 워크플로** — `roles/_team-workflow.md`
 3. **역할 파일** — `roles/<역할파일>.md`. 프로젝트 유형별 항목은 정체 블록의 프로젝트에 해당할 때만 적용
 
-Claude 는 `--append-system-prompt-file`, Codex 는 `-c developer_instructions` 로 주입합니다.
+Claude 는 `--append-system-prompt-file`, Codex 는 `-c developer_instructions` 로 주입합니다. 실행 명령은 멤버마다
+`roles/.merged/<세션>/<이름>.claude.sh`·`.codex.sh` 로 만들어 실행합니다.
+
+### 멤버별 플러그인
+
+팀 설정의 8번째 열에 적은 플러그인만 그 멤버에게 줍니다. Claude 는 공식 마켓플레이스 사본에서 `--plugin-dir` 로,
+Codex 는 설치된 공식 플러그인 중 부여되지 않은 것의 스킬을 끄는 방식으로 적용합니다(상세: `teams/README.md`).
+사용자 전역 설정에는 켜지 않으므로 개인 세션에는 나타나지 않습니다.
+
+### 체크포인트 자동 저장 훅
+
+컨텍스트 정리(`/compact`, 자동 정리) 직전에 `bin/team-checkpoint` 가 작업 폴더의
+`docs/checkpoints/<이름>-<시각>-auto.md` 에 git 상태와 정리 직전 대화 일부를 저장하고, 정리 후 첫 응답 전에
+"체크포인트를 읽고 이어가라" 는 지시를 한 번 주입합니다(공통 §0.5).
+
+| | 저장 | 복구 지시 |
+|---|---|---|
+| Claude | `PreCompact` | `SessionStart` (source `compact`) — 정리 직후 |
+| Codex | `PreCompact` | `SessionStart` (source `compact`) 또는 `UserPromptSubmit` — 다음 요청 직전 |
+
+훅은 멤버 세션에만 등록됩니다(Claude `--settings`, Codex `-c hooks.*`). 사용자 개인 세션에는 없습니다.
 
 ### 페인 찾기
 
@@ -202,11 +224,12 @@ Claude 는 `--append-system-prompt-file`, Codex 는 `-c developer_instructions` 
 ### Codex 멤버
 
 - 실행 옵션: `--dangerously-bypass-approvals-and-sandbox`(Claude 의 `--dangerously-skip-permissions` 대응 — 샌드박스가 꺼져 있어야
-  `team-send` 로 tmux 를 쓸 수 있음), `--search`(웹 검색), `-c check_for_update_on_startup=false`.
+  `team-send` 로 tmux 를 쓸 수 있음), `--search`(웹 검색), `--no-daemon`, `-c check_for_update_on_startup=false`, `--dangerously-bypass-hook-trust`.
+- `--no-daemon`: 대화형 Codex 는 기본적으로 공유 백그라운드 서버에 붙는데, 그러면 멤버별 설정이 섞일 수 있어 멤버마다 독립 프로세스로 띄웁니다.
+- `--dangerously-bypass-hook-trust`: 체크포인트 훅은 `-c` 로 넣어 신뢰 저장이 없으므로 그 실행에서만 신뢰 확인을 건너뜁니다. 이때 `~/.codex/hooks.json` 의 사용자 훅도 함께 실행됩니다.
 - 기동 시 업데이트 확인을 끄는 이유: 업데이트 안내가 뜬 상태에서 자동 입력된 Enter 가 "Update now" 로 선택되어 전역 업데이트가
   실행된 적이 있습니다. Codex 업데이트는 직접 하세요(`npm install -g @openai/codex`).
-- 처음 쓰는 폴더의 신뢰 대화상자는 자동 수락합니다. `~/.codex/hooks.json` 훅 검토 대화상자는 **신뢰하지 않고 건너뜁니다**
-  (그 실행에서 훅 미적용). 훅을 쓰려면 `codex` 를 한 번 직접 실행해 신뢰를 결정하세요.
+- 처음 쓰는 폴더의 신뢰 대화상자는 자동 수락합니다.
 
 ## 커스터마이징
 
@@ -241,6 +264,7 @@ Claude 는 `--append-system-prompt-file`, Codex 는 `-c developer_instructions` 
 ├── bin/
 │   ├── team-send            # 멤버 간 메시지 전송
 │   ├── team-status          # 멤버 상태·컨텍스트·Codex 한도
+│   ├── team-checkpoint      # 체크포인트 자동 저장 훅 (Claude·Codex)
 │   └── team-send-verify.sh  # Claude PostToolUse Hook (전송 이력 로그)
 ├── lib/
 │   ├── members.sh           # 팀 설정 로더
