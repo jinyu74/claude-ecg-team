@@ -56,28 +56,55 @@ ready_pattern() {
     esac
 }
 
+# ── 유틸: 멤버 정체 블록 — 역할 지시 맨 앞에 붙는다 ────────────
+# 페어처럼 여러 멤버가 같은 역할 파일을 쓸 때 각자 자기 이름·엔진·상대를 알게 한다.
+member_identity() {
+    local i="$1" j=0 partners="" eng
+    while [ $j -lt $M_COUNT ]; do
+        if [ $j -ne $i ] && [ "${M_ROLE[$j]}" = "${M_ROLE[$i]}" ]; then
+            [ "${M_ENGINE[$j]}" = "codex" ] && eng="Codex" || eng="Claude"
+            partners="${partners:+$partners, }${M_NAME[$j]} ($eng)"
+        fi
+        j=$((j + 1))
+    done
+    [ "${M_ENGINE[$i]}" = "codex" ] && eng="Codex" || eng="Claude"
+    cat <<EOF
+## 당신의 정체 (setup-team.sh 가 members.conf 로 생성)
+
+- 이름: **${M_NAME[$i]}** — team-send 수신자 이름${M_ALIASES[$i]:+ (별칭: ${M_ALIASES[$i]})}
+- 엔진: **$eng** (${M_MODEL[$i]}, effort ${M_EFFORT[$i]})
+- tmux 창: ${M_WINDOW[$i]}
+- 역할 파일: roles/${M_ROLE[$i]}.md
+- 같은 역할의 페어: ${partners:-없음}
+- 팀 구성은 \`team-send -h\`, 상태는 \`team-status\` 로 확인한다.
+
+---
+
+EOF
+}
+
 # ── 유틸: 멤버 실행 (claude | codex) + 다이얼로그 자동 처리 ──
 start_member_in_pane() {
-    local pane="$1" engine="$2" model="$3" role_file="${4:-}" effort="$5"
+    local pane="$1" idx="$2" role_file="${3:-}"
+    local engine="${M_ENGINE[$idx]}" model="${M_MODEL[$idx]}" effort="${M_EFFORT[$idx]}"
 
     tmux send-keys -t "$pane" C-c 2>/dev/null; sleep 0.3
     tmux send-keys -t "$pane" C-u 2>/dev/null; sleep 0.2
 
-    # 공통 워크플로(_team-workflow.md) + 역할 파일을 합쳐 단일 파일로 주입.
-    local merged_file=""
+    # 정체 블록 + 공통 워크플로(_team-workflow.md) + 역할 파일을 멤버별 단일 파일로 합쳐 주입.
+    # 파일 이름은 멤버 이름 — 페어가 같은 역할 파일을 써도 서로 덮어쓰지 않는다.
     local common_file="$ROLES_DIR/_team-workflow.md"
     local merged_dir="$ROLES_DIR/.merged"
+    local merged_file="$merged_dir/${M_NAME[$idx]}.md"
     mkdir -p "$merged_dir"
-    if [ -n "$role_file" ] && [ -f "$role_file" ]; then
-        merged_file="$merged_dir/$(basename "$role_file")"
+    {
+        member_identity "$idx"
         if [ -f "$common_file" ]; then
-            cat "$common_file" > "$merged_file"
-            printf "\n\n---\n\n" >> "$merged_file"
-            cat "$role_file" >> "$merged_file"
-        else
-            cat "$role_file" > "$merged_file"
+            cat "$common_file"
+            [ -n "$role_file" ] && printf "\n\n---\n\n"
         fi
-    fi
+        [ -n "$role_file" ] && cat "$role_file"
+    } > "$merged_file"
 
     # team-send 헬퍼를 PATH 에 노출 (페인 간 메시지 전송용)
     local prefix="cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" && unset CLAUDECODE"
@@ -87,7 +114,7 @@ start_member_in_pane() {
         # 역할 지시(~45KB)를 send-keys 로 타이핑하지 않도록 실행 스크립트를 만들어 호출한다.
         # TOML 멀티라인 리터럴 문자열(''') 은 이스케이프가 필요 없지만, 본문에 ''' 가 있으면 깨진다.
         local tq="'''"
-        local launcher="$merged_dir/$(basename "${role_file:-member-$pane}" .md).codex.sh"
+        local launcher="$merged_dir/${M_NAME[$idx]}.codex.sh"
         local codex_cmd
         codex_cmd="exec $(printf '%q' "$(command -v codex)") --dangerously-bypass-approvals-and-sandbox -m $(printf '%q' "$model") -c model_reasoning_effort=$(printf '%q' "$effort")"
         if [ -n "$merged_file" ]; then
@@ -415,7 +442,7 @@ while [ $i -lt $M_COUNT ]; do
         role_file=""
     fi
     echo -n "  Pane $i (${M_NAME[$i]} · ${M_ENGINE[$i]} ${M_MODEL[$i]} · ${M_EFFORT[$i]}): "
-    start_member_in_pane "$pane_id" "${M_ENGINE[$i]}" "${M_MODEL[$i]}" "$role_file" "${M_EFFORT[$i]}" || true
+    start_member_in_pane "$pane_id" "$i" "$role_file" || true
 
     tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "$(ready_pattern "${M_ENGINE[$i]}")" \
         && echo -e "${GREEN}✅ 준비 완료${NC}" \
