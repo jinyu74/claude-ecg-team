@@ -20,6 +20,8 @@ codex_rollout_for_pane() {
         }'); do
         lsof -a -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | grep -m1 '/rollout-.*\.jsonl$' && return 0
     done
+    # 아직 첫 요청 전이라 세션 기록이 없으면 빈 결과 — set -e 호출자를 멈추지 않도록 성공으로 끝낸다.
+    return 0
 }
 
 # codex_latest_rollout — 가장 최근에 갱신된 세션 기록 (사용 한도는 계정 단위라 아무 세션이나 최신이면 된다)

@@ -127,7 +127,8 @@ render_once() {
     # 페인별 한 줄 (상태 + 컨텍스트) + 미리보기
     # 페인은 setup-team.sh 의 @member 태그(멤버 번호) 순으로 표시 — tmux base-index·창 분리와 무관
     local codex_rollout=""
-    while IFS='|' read -r idx pane_id win role engine cmd dead pid; do
+    # 목록은 fd 3 으로 읽는다 — 루프 안의 ps·lsof 등이 표준 입력을 소비해도 목록이 끊기지 않게.
+    while IFS='|' read -r -u 3 idx pane_id win role engine cmd dead pid; do
         local state state_short
         if [ "$dead" = "1" ]; then
             state="💀 종료됨" ; state_short="DEAD"
@@ -174,7 +175,7 @@ render_once() {
                 | head -c 4000
             echo ""
         fi
-    done <<EOF
+    done 3<<EOF
 $(tmux list-panes -s -t "$SESSION" -F '#{@member}|#{pane_id}|#{window_name}|#{@role}|#{@engine}|#{pane_current_command}|#{pane_dead}|#{pane_pid}' | sort -t '|' -k1,1n)
 EOF
 
