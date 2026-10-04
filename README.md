@@ -218,7 +218,10 @@ Codex 는 설치된 공식 플러그인 중 부여되지 않은 것의 스킬을
 
 - 각 페인에 멤버 번호(`@member`)·라벨(`@role`)·엔진(`@engine`) 태그를 붙이고, `team-send`·`team-status` 는 tmux 번호가 아니라
   이 태그로 페인을 찾습니다. `~/.tmux.conf` 의 `base-index` 설정과 무관합니다.
-- 사용한 팀 설정 경로는 세션 옵션 `@team_members_file` 에 기록되어, `team-send` 가 그 세션의 구성을 씁니다.
+- 기동 시점의 팀 설정 **스냅샷**(`roles/.merged/<세션>/team.conf`)이 세션 옵션 `@team_members_file` 에 기록되어, `team-send` 가 그 세션의 구성을 씁니다.
+  실행 중 원본 설정을 고쳐도 이름 ↔ 페인 대응은 바뀌지 않습니다(원본 경로는 `@team_members_source`). 별칭이 다른 멤버의 이름·별칭과 겹치면 설정 로드가 실패합니다.
+- `team-send`·`team-status` 의 대상 세션: `--session` → `TEAM_SESSION`(멤버 페인) → 호출 페인의 세션. tmux 밖에서 세션이 여럿이면 `--session` 이 필요합니다.
+- 회귀 테스트: `tests/team-tools.sh` — 격리된 tmux 서버와 가짜 CLI 페인으로 전달 판정·세션 선택·이름 해석·상태 조회를 검사합니다.
 - 멤버 기동 전에 태그 매핑을 검증하고, 어긋나면 세션을 종료합니다.
 
 ### Codex 멤버

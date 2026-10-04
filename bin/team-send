@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # ── 멤버 매핑 — 팀 설정 teams/*.conf (행 순서 = 멤버 번호) ──
-# 설정 파일 우선순위: 세션 옵션 @team_members_file (setup-team.sh 가 기록)
+# 설정 파일 우선순위: 세션 옵션 @team_members_file (setup-team.sh 가 기록한 기동 시점 스냅샷)
 #   → 환경변수 TEAM_MEMBERS_FILE → 기본 팀 teams/idea.conf
 TEAM_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$TEAM_HOME/lib/members.sh"
@@ -31,7 +31,9 @@ Usage:
 EOF
     # 현재 세션의 팀 설정을 우선 보여 준다
     local f
-    f="$(tmux show-options -v -t "$(tmux display-message -p '#S' 2>/dev/null)" @team_members_file 2>/dev/null || true)"
+    local s="${TEAM_SESSION:-}"
+    [ -n "$s" ] || s="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#S' 2>/dev/null || true)"
+    f="$(tmux show-options -v -t "$s" @team_members_file 2>/dev/null || true)"
     if load_members "${f:-${TEAM_MEMBERS_FILE:-$TEAM_HOME/teams/idea.conf}}" 2>/dev/null; then
         echo "" >&2
         echo "Recipients (이름 / 별칭):" >&2

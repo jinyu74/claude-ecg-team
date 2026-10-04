@@ -44,6 +44,17 @@ case "$MEMBERS_FILE" in
 esac
 [ -f "$MEMBERS_FILE" ] && MEMBERS_FILE="$(cd "$(dirname "$MEMBERS_FILE")" && pwd)/$(basename "$MEMBERS_FILE")"
 load_members "$MEMBERS_FILE" || exit 1
+# 역할 파일이 없는 멤버는 역할 지시 없이 기동되므로 세션을 만들기 전에 실패시킨다.
+_missing_roles=""
+i=0
+while [ $i -lt $M_COUNT ]; do
+    [ -f "$ROLES_DIR/${M_ROLE[$i]}.md" ] || _missing_roles="$_missing_roles ${M_NAME[$i]}(roles/${M_ROLE[$i]}.md)"
+    i=$((i + 1))
+done
+if [ -n "$_missing_roles" ]; then
+    echo -e "\033[0;31m❌ 역할 파일 없음:$_missing_roles — 팀 설정의 역할파일 열 또는 roles/ 를 확인하세요.\033[0m"
+    exit 1
+fi
 WORKDIR="${WORKDIR:-$PWD}"
 if [ ! -d "$WORKDIR" ]; then
     echo -e "\033[0;36m📁 작업 디렉터리 생성: $WORKDIR\033[0m"
@@ -74,6 +85,14 @@ member_identity() {
         j=$((j + 1))
     done
     [ "${M_ENGINE[$i]}" = "codex" ] && eng="Codex" || eng="Claude"
+    local roster="" wt_note
+    j=0
+    while [ $j -lt $M_COUNT ]; do roster="${roster:+$roster, }${M_NAME[$j]}"; j=$((j + 1)); done
+    if [ "${M_DIR[$i]}" != "$WORKDIR" ]; then
+        wt_note="${M_DIR[$i]} — **전용 git worktree**. 브랜치 전환·커밋은 여기서만 한다. 커밋하지 않는 공유 산출물(분석·명세 문서 등)은 공유 작업 폴더 \`$WORKDIR\`(\$TEAM_WORKDIR)에 쓰고 절대 경로로 알린다 (공통 §2.4)"
+    else
+        wt_note="$WORKDIR — 공유 작업 폴더 (브랜치를 바꾸지 않는다 — 공통 §2.4)"
+    fi
     cat <<EOF
 ## 당신의 정체 (setup-team.sh 가 팀 설정으로 생성)
 
@@ -84,11 +103,63 @@ member_identity() {
 - 역할 파일: roles/${M_ROLE[$i]}.md
 - 같은 역할의 페어: ${partners:-없음}
 - 부여된 플러그인: ${M_PLUGINS[$i]:-없음} (팀 설정 플러그인 열 — 이 목록 밖의 스킬·플러그인이 설치돼 있다고 가정하지 않는다)
+- 작업 폴더: $wt_note
+- 팀 명단: $roster — 역할 파일·공통 워크플로가 이 명단에 없는 멤버를 부르면 아래 대체 담당에게, 표에도 없으면 제임스에게 보낸다 (공통 §8.1)
 - 팀 구성은 \`team-send -h\`, 상태는 \`team-status\` 로 확인한다.
-
----
-
 EOF
+    if [ -n "${M_DUTY[$i]}" ]; then
+        printf '\n### 이 프로젝트에서의 책임 (팀 설정 @duty — 역할 파일의 책임 범위보다 우선)\n\n'
+        printf '%s\n' "${M_DUTY[$i]}" | sed 's/^/- /'
+    fi
+    if [ "$SUB_COUNT" -gt 0 ]; then
+        printf '\n### 이 팀에 없는 멤버의 대체 담당 (팀 설정 @substitute)\n\n| 역할 파일이 부르는 멤버 | 이 팀의 담당 | 범위 |\n|---|---|---|\n'
+        j=0
+        while [ $j -lt $SUB_COUNT ]; do
+            printf '| %s | %s | %s |\n' "${SUB_ABSENT[$j]}" "${SUB_TO[$j]}" "${SUB_NOTE[$j]:--}"
+            j=$((j + 1))
+        done
+    fi
+    printf '\n---\n\n'
+}
+
+# ── 유틸: 멤버별 작업 폴더 (@worktree) ─────────────────────
+# 지정 멤버는 작업 폴더 저장소의 전용 worktree(<저장소>-wt/<이름>)에서 기동해 브랜치·인덱스·커밋이 섞이지 않게 한다.
+# 이미 있는 worktree 는 그대로 재사용한다(체크아웃된 브랜치·변경을 건드리지 않음). 새로 만들 때는 저장소 HEAD 에서 detached 로 만든다.
+# 작업 폴더가 git 저장소가 아니거나 커밋이 없으면 경고 후 공유 폴더에서 기동한다. 삭제는 자동으로 하지 않는다(git worktree remove).
+M_DIR=()
+prepare_worktrees() {
+    local i=0 any=0 top rel dir common
+    while [ $i -lt $M_COUNT ]; do
+        M_DIR[$i]="$WORKDIR"; [ "${M_WORKTREE[$i]}" = 1 ] && any=1
+        i=$((i + 1))
+    done
+    [ $any -eq 1 ] || return 0
+    if ! top="$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)" || ! git -C "$top" rev-parse -q --verify HEAD >/dev/null; then
+        echo -e "  ${YELLOW}⚠️  작업 폴더가 커밋이 있는 git 저장소가 아니라 @worktree 를 적용하지 않습니다 — 전원 공유 폴더에서 기동${NC}"
+        return 0
+    fi
+    common="$(git -C "$top" rev-parse --path-format=absolute --git-common-dir)"
+    rel="${WORKDIR#"$top"}"; rel="${rel#/}"
+    i=0
+    while [ $i -lt $M_COUNT ]; do
+        if [ "${M_WORKTREE[$i]}" = 1 ]; then
+            dir="$top-wt/${M_NAME[$i]}"
+            if [ -e "$dir" ]; then
+                if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" != "$common" ]; then
+                    echo -e "  ${RED}❌ $dir 가 이미 있지만 이 저장소의 worktree 가 아닙니다 — 옮기거나 지운 뒤 다시 실행하세요${NC}"
+                    exit 1
+                fi
+                echo "  ♻️  ${M_NAME[$i]}: 기존 worktree 재사용 ($dir, $(git -C "$dir" rev-parse --abbrev-ref HEAD))"
+            else
+                mkdir -p "$top-wt"
+                git -C "$top" worktree add -q --detach "$dir" HEAD || { echo -e "  ${RED}❌ ${M_NAME[$i]}: worktree 생성 실패 ($dir)${NC}"; exit 1; }
+                echo "  🌿 ${M_NAME[$i]}: worktree 생성 ($dir, detached $(git -C "$dir" rev-parse --short HEAD))"
+            fi
+            M_DIR[$i]="$dir${rel:+/$rel}"
+            mkdir -p "${M_DIR[$i]}"
+        fi
+        i=$((i + 1))
+    done
 }
 
 # ── 유틸: 멤버별 플러그인 (팀 설정 플러그인 열) ─────────────
@@ -180,7 +251,7 @@ start_member_in_pane() {
     # team-send 헬퍼를 PATH 에 노출 (페인 간 메시지 전송용)
     # TEAM_MEMBER·TEAM_ENGINE: 체크포인트 훅(bin/team-checkpoint)이 멤버를 식별하는 데 쓴다.
     # 한글 이름은 printf %q 로 감싸면 페인의 zsh 가 바이트를 잘못 해석하므로 큰따옴표로만 감싼다.
-    local prefix="cd \"$WORKDIR\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" TEAM_MEMBER=\"${M_NAME[$idx]}\" TEAM_ENGINE=$engine TEAM_SESSION=\"$SESSION\" && unset CLAUDECODE"
+    local prefix="cd \"${M_DIR[$idx]}\" && export PATH=\"$SCRIPT_DIR/bin:\$PATH\" TEAM_WORKDIR=\"$WORKDIR\" TEAM_MEMBER=\"${M_NAME[$idx]}\" TEAM_ENGINE=$engine TEAM_SESSION=\"$SESSION\" && unset CLAUDECODE"
     # security-guidance: 여러 멤버가 한 작업 폴더를 공유하므로 턴 종료 LLM 리뷰는 끈다 (플러그인 README 권장 — 다른 멤버가 HEAD 를 옮길 수 있음)
     case " ${M_PLUGINS[$idx]} " in *" security-guidance "*) prefix="$prefix && export ENABLE_STOP_REVIEW=0" ;; esac
     local checkpoint="$SCRIPT_DIR/bin/team-checkpoint"
@@ -402,6 +473,9 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     esac
 fi
 
+# 멤버별 작업 폴더 — 세션을 만들기 전에 준비한다(실패하면 세션 없이 끝남).
+prepare_worktrees
+
 # ── [2/4] TMUX 세션 & 레이아웃 구성 ────────────────────────
 echo -e "\n${YELLOW}[2/4] TMUX 세션 & 레이아웃 구성...${NC}"
 
@@ -474,8 +548,12 @@ while [ $w -lt $W_COUNT ]; do
     done
     if [ $w -eq 0 ]; then
         tmux new-session -d -s "$SESSION" -n "${W_NAME[$w]}" -x "$TERM_WIDTH" -y "$TERM_HEIGHT"
-        # team-send 가 이 세션의 멤버 설정을 찾을 수 있도록 세션 옵션에 기록
-        tmux set-option -t "$SESSION" @team_members_file "$MEMBERS_FILE"
+        # team-send 가 이 세션의 멤버 설정을 찾을 수 있도록 세션 옵션에 기록.
+        # 원본이 아니라 기동 시점 스냅샷을 가리킨다 — 실행 중 원본의 행 순서를 바꿔도 이름 ↔ @member 대응이 어긋나지 않게.
+        mkdir -p "$ROLES_DIR/.merged/$SESSION"
+        cp "$MEMBERS_FILE" "$ROLES_DIR/.merged/$SESSION/team.conf"
+        tmux set-option -t "$SESSION" @team_members_file "$ROLES_DIR/.merged/$SESSION/team.conf"
+        tmux set-option -t "$SESSION" @team_members_source "$MEMBERS_FILE"
         # 첫 페인 — tmux base-index 설정과 무관하게 세션의 활성 페인으로 잡는다.
         first="$(tmux display-message -p -t "$SESSION" '#{pane_id}')"
     else
@@ -538,30 +616,38 @@ fi
 # ── [3/4] Claude 자동 실행 ──────────────────────────────────
 echo -e "\n${YELLOW}[3/4] 멤버 실행 중 (Claude / Codex)... (페인당 최대 1분)${NC}"
 
-# 멤버별 엔진·모델·effort·역할 파일은 팀 설정(teams/*.conf)이 단일 소스.
+# 멤버별 엔진·모델·effort·역할 파일은 팀 설정(teams/*.conf)이 단일 소스. 역할 파일 존재는 시작 전에 검증했다.
+# 기동 함수 실패와 준비 화면 미확인을 모두 실패로 집계해 완료 배너에 반영한다.
+NOT_READY=""
 i=0
 while [ $i -lt $M_COUNT ]; do
     pane_id="${PANE_IDS[$i]}"
     role_file="$ROLES_DIR/${M_ROLE[$i]}.md"
-    if [ ! -f "$role_file" ]; then
-        echo -e "  ${YELLOW}⚠️  역할 파일 없음: $role_file (역할 미주입)${NC}"
-        role_file=""
-    fi
     echo -n "  Pane $i (${M_NAME[$i]} · ${M_ENGINE[$i]} ${M_MODEL[$i]} · ${M_EFFORT[$i]}): "
-    start_member_in_pane "$pane_id" "$i" "$role_file" || true
+    started=1
+    start_member_in_pane "$pane_id" "$i" "$role_file" || started=0
 
-    tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "$(ready_pattern "${M_ENGINE[$i]}")" \
-        && echo -e "${GREEN}✅ 준비 완료${NC}" \
-        || echo -e "${RED}⚠️  타임아웃 — 수동 확인 필요${NC}"
+    if [ "$started" -eq 1 ] && tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -q "$(ready_pattern "${M_ENGINE[$i]}")"; then
+        echo -e "${GREEN}✅ 준비 완료${NC}"
+    else
+        echo -e "${RED}⚠️  준비 미확인 — 수동 확인 필요${NC}"
+        NOT_READY="$NOT_READY ${M_NAME[$i]}"
+    fi
     i=$((i + 1))
 done
 
 # ── [4/4] 완료 ──────────────────────────────────────────────
-echo -e "\n${GREEN}"
-echo "  ╔══════════════════════════════════════╗"
-echo "  ║   ✅ 팀 환경 구성 완료!              ║"
-echo "  ╚══════════════════════════════════════╝"
-echo -e "${NC}"
+if [ -z "$NOT_READY" ]; then
+    echo -e "\n${GREEN}"
+    echo "  ╔══════════════════════════════════════╗"
+    echo "  ║   ✅ 팀 환경 구성 완료 (전원 준비)   ║"
+    echo "  ╚══════════════════════════════════════╝"
+    echo -e "${NC}"
+else
+    n_bad=$(echo $NOT_READY | wc -w | tr -d ' ')
+    echo -e "\n${RED}  ⚠️  부분 준비 — $((M_COUNT - n_bad))/${M_COUNT}명 준비, 미확인:${NOT_READY}${NC}"
+    echo -e "${RED}     해당 페인을 확인하세요 (team-status --session '$SESSION' --tail 10). 준비되지 않은 멤버에게는 team-send 가 거절되거나 전달 미확인(exit 5)이 됩니다.${NC}"
+fi
 
 # 터미널에서 직접 실행한 경우 자동 attach
 [ -t 1 ] && tmux attach -t "$SESSION"

@@ -87,9 +87,10 @@ fi
 ##   auto-compact 직후엔 메트릭 미표시 (재계산 중)
 ##
 ## 출력 컬럼은 "ctx" 한 칸으로 통합. 임계 마커:
+## 공통 규칙 §0.5 의 70% 임계와 맞춘다 (제임스 역할의 임계표와 같은 기준):
 ##   60% 미만 ctx_used      → 정상
-##   60-79% ctx_used        → ℹ️
-##   80-89% ctx_used        → ⚠️
+##   60-69% ctx_used        → ℹ️
+##   70-89% ctx_used        → ⚠️  (임계 — 정리 후 /compact 지시)
 ##   90%+ ctx_used 또는 until auto-compact 20% 미만 → 🚨
 ##   until auto-compact 5% 미만 → 🆘 (긴급)
 extract_context() {
@@ -111,7 +112,7 @@ extract_context() {
     elif [ -n "$ctx_used" ]; then
         local marker
         if   [ "$ctx_used" -ge 90 ]; then marker="🚨"
-        elif [ "$ctx_used" -ge 80 ]; then marker="⚠️ "
+        elif [ "$ctx_used" -ge 70 ]; then marker="⚠️ "
         elif [ "$ctx_used" -ge 60 ]; then marker="ℹ️ "
         else                              marker="  "
         fi
@@ -152,8 +153,10 @@ render_once() {
                 u="$(codex_usage "$rollout")"; ctx="${u%%|*}"
                 if [ -n "$ctx" ]; then
                     local marker="  "
-                    if   [ "$ctx" -le 10 ]; then marker="🚨"
-                    elif [ "$ctx" -le 20 ]; then marker="⚠️ "
+                    # 70% 사용 = 30% left 를 임계로 (공통 §0.5)
+                    if   [ "$ctx" -le 10 ]; then marker="🆘"
+                    elif [ "$ctx" -le 20 ]; then marker="🚨"
+                    elif [ "$ctx" -le 30 ]; then marker="⚠️ "
                     elif [ "$ctx" -le 40 ]; then marker="ℹ️ "
                     fi
                     ctx_col="$(printf "%s %s%% left  " "$marker" "$ctx")"
@@ -191,8 +194,8 @@ EOF
     fi
 
     echo "─── 컨텍스트 임계 안내 ───"
-    echo "  Claude(used): ℹ️ 60%+   ⚠️ 80%+   🚨 90%+ 또는 compact 20% 미만   🆘 compact 5% 미만"
-    echo "  Codex(left):  ℹ️ 40% 이하   ⚠️ 20% 이하   🚨 10% 이하"
+    echo "  Claude(used): ℹ️ 60%+   ⚠️ 70%+ (임계)   🚨 90%+ 또는 compact 20% 미만   🆘 compact 5% 미만"
+    echo "  Codex(left):  ℹ️ 40% 이하   ⚠️ 30% 이하 (임계)   🚨 20% 이하   🆘 10% 이하"
     echo "  임계 도달 시: 해당 멤버에게 'docs/checkpoints/<role>.md 에 현 상태 요약 저장 후 /compact' 지시."
 }
 
