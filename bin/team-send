@@ -84,10 +84,26 @@ fi
 [ -z "$MESSAGE" ] && { echo "빈 메시지" >&2; exit 1; }
 
 # ── 세션 식별 ───────────────────────────────────────────────
+# 여러 팀 세션을 동시에 띄울 수 있으므로 "가장 최근 세션" 추정에 기대지 않는다:
+#   --session → TEAM_SESSION(setup-team.sh 가 멤버 페인에 지정) → 호출 페인(TMUX_PANE)의 세션
+#   → tmux 밖에서는 세션이 하나뿐일 때만 그 세션, 여럿이면 --session 요구.
 if [ -n "$SESSION_OVERRIDE" ]; then
     SESSION="$SESSION_OVERRIDE"
+elif [ -n "${TEAM_SESSION:-}" ]; then
+    SESSION="$TEAM_SESSION"
+elif [ -n "${TMUX_PANE:-}" ]; then
+    SESSION="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || true)"
 else
-    SESSION="$(tmux display-message -p '#S' 2>/dev/null || echo team)"
+    _SESSIONS="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+    if [ "$(printf '%s\n' "$_SESSIONS" | grep -c .)" -gt 1 ]; then
+        echo "❌ tmux 세션이 여럿입니다 — --session <이름> 으로 지정하세요: $(printf '%s' "$_SESSIONS" | tr '\n' ' ')" >&2
+        exit 1
+    fi
+    SESSION="${_SESSIONS:-team}"
+fi
+if [ -z "$SESSION" ] || ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "❌ 세션 '${SESSION}' 을 찾을 수 없습니다. 사용 가능: $(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')" >&2
+    exit 3
 fi
 
 # ── 멤버 설정 로드 + 수신자 페인 결정 ──────────────────────
@@ -180,30 +196,50 @@ tmux send-keys -t "$TARGET" Enter
 #   (1) 큐잉 성공 → OK — Claude "Press up to edit queued" · Codex "Messages to be submitted"
 #   (2) collapse placeholder 잔존(긴 메시지) → 미제출 — Claude "Pasted text" · Codex "Pasted Content"
 #   (3) MSG_PROBE — 짧은 메시지 비-collapse 잔존 안전망
+#   (4) 프롬프트 기호를 못 찾음 → 판정 불가. 성공으로 치지 않는다 (Enter 재발사도 하지 않음)
 # blind-Enter 안전장치: (2)(3) 신호가 입력창 구간에 있을 때만 재발사.
-MSG_PROBE="$(printf '%s' "$PAYLOAD" | head -1 | cut -c1-25)"
-_DELIVERED=1
+# MSG_PROBE: 첫 비어 있지 않은 줄의 앞 20자. 문자 단위로 자른다 — cut -c 는 macOS 에서 바이트 단위라 한글이 깨져 매칭 실패.
+_FIRST_LINE="$(printf '%s\n' "$PAYLOAD" | awk 'NF{print; exit}')"
+MSG_PROBE="${_FIRST_LINE:0:20}"
+_STATE=unknown   # ok | pending(잔존) | unknown(입력창 판독 불가)
 for _i in 1 2 3; do
     sleep 0.7
-    _CAP="$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | tail -20)"
+    # 끝의 빈 줄을 버린 뒤 마지막 20줄 — 화면 아래가 비어 있으면 tail 이 빈 줄만 잡아 입력창을 놓친다
+    _CAP="$(tmux capture-pane -t "$TARGET" -p 2>/dev/null | awk '{l[NR]=$0} NF{last=NR} END{for(i=1;i<=last;i++) print l[i]}' | tail -20)"
     # 큐잉 성공 신호 → 즉시 OK
-    printf '%s' "$_CAP" | grep -qE "Press up to edit queued|Messages to be submitted" && { _DELIVERED=1; break; }
+    if printf '%s' "$_CAP" | grep -qE "Press up to edit queued|Messages to be submitted"; then
+        _STATE=ok; break
+    fi
     # 프롬프트 기호 이후 구간(입력창)만 추출 — transcript 에코 방지 (마지막 기호 기준)
     _INPUT_AREA="$(printf '%s' "$_CAP" | awk '/❯|^[[:space:]]*›/{buf=""; found=1} found{buf=buf$0 ORS} END{printf "%s", buf}')"
-    # 잔존 검사 먼저 — 입력창에 [Pasted text] 또는 MSG_PROBE 있으면 확정 미제출 → 재발사
+    if [ -z "$_INPUT_AREA" ]; then
+        _STATE=unknown; continue   # 화면 갱신 중일 수 있어 다시 본다
+    fi
+    # 잔존 검사 — 입력창에 [Pasted text] 또는 MSG_PROBE 있으면 확정 미제출 → 재발사
     # (제출 성공이면 paste 가 transcript 로 이동해 입력창에서 사라지므로 잔존 = 미제출 확정)
     if printf '%s' "$_INPUT_AREA" | grep -qE "Pasted text|Pasted Content" || \
-       { [ -n "$MSG_PROBE" ] && printf '%s' "$_INPUT_AREA" | grep -qF "$MSG_PROBE"; }; then
-        tmux send-keys -t "$TARGET" Enter 2>/dev/null
-        _DELIVERED=0
+       { [ -n "$MSG_PROBE" ] && printf '%s' "$_INPUT_AREA" | grep -qF -- "$MSG_PROBE"; }; then
+        tmux send-keys -t "$TARGET" Enter 2>/dev/null || true
+        _STATE=pending
     else
-        _DELIVERED=1; break  # 입력창 비어있음 = 제출 성공 (esc든 idle 이든 무관)
+        _STATE=ok; break  # 입력창 비어있음 = 제출 성공 (esc든 idle 이든 무관)
     fi
 done
-# 3회 소진 후 잔존 신호 잔류 시 경고 — 수동 확인 유도
-[ "$_DELIVERED" -eq 0 ] && echo "⚠️ ${SENDER} → ${RECIPIENT_NAME} delivery 미확인 — 수동 확인 권장" >&2
 
-echo "✅ ${SENDER} → ${RECIPIENT_NAME} (pane ${IDX}, ${PAYLOAD_BYTES}B)"
+if [ "$_STATE" = ok ]; then
+    echo "✅ ${SENDER} → ${RECIPIENT_NAME} (pane ${IDX}, ${PAYLOAD_BYTES}B)"
+    EXIT_CODE=0
+else
+    # 성공 표시(✅)를 내지 않는다 — 전송 이력 Hook·발신자가 성공으로 오인하지 않도록 exit 5
+    if [ "$_STATE" = pending ]; then
+        _WHY="입력창에 메시지가 남아 있음 (Enter 3회 재발사 후)"
+    else
+        _WHY="수신자 입력창(❯/›)을 화면에서 찾지 못함"
+    fi
+    echo "⚠️ ${SENDER} → ${RECIPIENT_NAME} (pane ${IDX}, ${PAYLOAD_BYTES}B) delivery 미확인 — ${_WHY}"
+    echo "   확인: team-status --session '$SESSION' --tail 15 · 같은 메시지를 다시 보내지 말고 제임스에게 보고" >&2
+    EXIT_CODE=5
+fi
 
 # ── Codex 수신자: 5시간 사용 한도 확인 (전송은 막지 않고 발신자에게 알림) ──
 if [ "${M_ENGINE[$IDX]}" = "codex" ]; then
@@ -216,3 +252,5 @@ EOF
         echo "$(codex_limit_marker "$_P") Codex 5시간 한도 ${_P}% 남음 (리셋 $(codex_fmt_time "$_PR")) — 큰 작업이면 사용자에게 보고 후 진행(리셋 대기 / Claude 쪽 재배정 / effort 하향)." >&2
     fi
 fi
+
+exit "$EXIT_CODE"

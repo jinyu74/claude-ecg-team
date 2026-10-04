@@ -62,8 +62,11 @@ if [ "$LIMITS_ONLY" -eq 1 ]; then
 fi
 
 # ── 세션 식별 ────────────────────────────────────────────────
+# team-send 와 같은 순서: --session → TEAM_SESSION(멤버 페인) → 호출 페인의 세션 → tmux 기본
 if [ -n "$SESSION_OVERRIDE" ]; then
     SESSION="$SESSION_OVERRIDE"
+elif [ -n "${TEAM_SESSION:-}" ]; then
+    SESSION="$TEAM_SESSION"
 elif [ -n "${TMUX_PANE:-}" ]; then
     SESSION="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo team)"
 else
@@ -167,12 +170,13 @@ render_once() {
 
         # 마지막 N 줄 미리보기 (빈 줄 제외, 우측 컬럼 너비 제한)
         if [ "$TAIL_LINES" -gt 0 ] && [ "$state_short" = "OK" ]; then
+            # 화면에 빈 줄·상태 표시줄만 있으면 grep 이 1 을 돌려 pipefail + set -e 로 전체가 끝나므로 실패를 흡수한다
             tmux capture-pane -t "$pane_id" -p 2>/dev/null \
                 | grep -v "^$" \
                 | grep -vE "(context used|until auto-compact|bypass permissions|paste again|shift\+tab)" \
                 | tail -n "$TAIL_LINES" \
                 | sed 's/^/         │ /' \
-                | head -c 4000
+                | head -c 4000 || true
             echo ""
         fi
     done 3<<EOF

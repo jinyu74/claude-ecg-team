@@ -335,16 +335,16 @@ cat report.md | team-send 제임스
 - 수신자 페인이 비활성(CLI 종료) 이면 exit 4 로 거절
 - 수신자가 Codex 이고 5시간 한도가 30% 미만이면 경고 출력 (§0.5.1)
 
-`--no-header` 로 헤더 생략, `--session <name>` 으로 비기본 세션 지정 가능.
+`--no-header` 로 헤더 생략, `--session <name>` 으로 비기본 세션 지정 가능. 세션은 `--session` → `TEAM_SESSION`(멤버 페인 자동 지정) → 호출 페인의 세션 순으로 정하므로 여러 팀을 동시에 띄워도 자기 팀으로 간다. tmux 밖에서 세션이 여럿이면 `--session` 이 필수다.
 
 ### 8.2.1 송신 후 검증 (의무 — 모든 크기 메시지 공통)
 
 `team-send` 호출 후 **반드시 다음 4단계 확인**한 뒤에야 "전달 완료" 보고. 검증 없는 "전달 완료" 보고 금지 — LLM 환각으로 거짓 보고가 발생한다.
 
 1. Bash 도구의 **종료 코드 = 0** (셸 출력 마지막 줄 `✅ <발신> → <수신> (pane N)`)
-2. 비0 종료 시 stderr 메시지로 원인 식별 (exit 3 = 페인 없음, exit 4 = 비활성)
+2. 비0 종료 시 stderr 메시지로 원인 식별 (exit 3 = 세션·페인 없음, exit 4 = 비활성, exit 5 = 전달 미확인 — 같은 메시지를 재전송하지 말고 3단계로 확인 후 제임스에게 보고)
 3. **수신자 페인 capture 으로 메시지 전달 확인** — `team-status --tail 15` 로 수신자 미리보기 확인 (페인 번호는 tmux 설정에 따라 달라지므로 직접 지정하지 않는다)
-4. **Enter 발동 확인** — 수신자 화면에 작업 표시가 있어야 active. Claude: spinner (`✻ Thinking…` 등)·`esc to interrupt` / Codex: `Working (… esc to interrupt)` 또는 대기열 `Messages to be submitted`. 입력창(Claude `❯`, Codex `›`)에 메시지 잔존이면 Enter 미발동 — `team-send` 가 자동 재발사하며, 그래도 `delivery 미확인` 경고가 나오면 제임스에게 보고
+4. **Enter 발동 확인** — 수신자 화면에 작업 표시가 있어야 active. Claude: spinner (`✻ Thinking…` 등)·`esc to interrupt` / Codex: `Working (… esc to interrupt)` 또는 대기열 `Messages to be submitted`. 입력창(Claude `❯`, Codex `›`)에 메시지 잔존이면 Enter 미발동 — `team-send` 가 자동 재발사하며, 그래도 남아 있거나 입력창을 찾지 못하면 `delivery 미확인` + exit 5 로 끝난다 — 제임스에게 보고
 
 **자동화** — `team-send` 자체가 4단계(입력창 잔존 확인·Enter 재발사)를 수행한다. Claude 멤버는 추가로 `team-send-verify` PostToolUse Hook 이 전송 이력을 기록한다(Codex 에는 이 Hook 이 없다). 로그 `/tmp/team-send-verify.log`, 가이드 `~/.claude/skills/team-send-verify/SKILL.md`. **Hook 는 보완책이지 면제책 아님** — Hook 실패 (jq 미설치·tmux 비가용·스크립트 손상) 시 위 4단계를 매뉴얼 수행한다.
 
